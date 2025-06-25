@@ -20,7 +20,7 @@ Original file is located at
 *   The solutions on the Pareto front represent optimal material input combinations under the given constraints (+/- 20% of base amounts). Decision-makers can choose a solution from this front based on their specific priorities regarding cost versus environmental impact.
 """
 
-!pip install deap pandas numpy openpyxl
+
 
 from google.colab import files
 import pandas as pd
