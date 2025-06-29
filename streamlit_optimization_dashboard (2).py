@@ -11,12 +11,24 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import random
-# import subprocess # Already imported
-# import sys # Already imported
+import subprocess
+import sys
 from io import BytesIO
 
-# Ensure Streamlit is installed (check already in first cell)
-# Ensure DEAP is installed (check already in first cell)
+# Ensure Streamlit is installed
+try:
+    import streamlit as st
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "streamlit"])
+    import streamlit as st
+
+# Ensure DEAP is installed
+try:
+    from deap import base, creator, tools, algorithms
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "deap"])
+    from deap import base, creator, tools, algorithms
+
 
 random.seed(42)
 
@@ -242,9 +254,13 @@ def run_nsga2(popsize, ngen, cxpb, mutpb, lows, highs, costs, matrix, impact_col
         pass # Classes don't exist yet, which is fine
 
     # Define the fitness function (minimizing two objectives: cost and GWP)
-    creator.create("FitnessMin", base.Fitness, weights=(-1.0, -1.0))
+    # Check if FitnessMin already exists before creating
+    if not hasattr(creator, 'FitnessMin'):
+        creator.create("FitnessMin", base.Fitness, weights=(-1.0, -1.0))
     # Define the individual as a list with the defined fitness attribute
-    creator.create("Individual", list, fitness=creator.FitnessMin)
+    # Check if Individual already exists before creating
+    if not hasattr(creator, 'Individual'):
+        creator.create("Individual", list, fitness=creator.FitnessMin)
 
     toolbox = base.Toolbox()
     # Register a function to create random floats within the defined bounds for each material
@@ -294,7 +310,7 @@ def run_nsga2(popsize, ngen, cxpb, mutpb, lows, highs, costs, matrix, impact_col
     # mu+lambda algorithm: mu individuals are selected from the population and reproduce
     # with lambda offspring. The next generation is selected from the union of mu and lambda individuals.
     algorithms.eaMuPlusLambda(pop, toolbox, mu=popsize, lambda_=popsize, cxpb=cxpb, mutpb=mutpb, ngen=ngen, verbose=False)
-    # Return the first front of non-dominated individuals (Pareto front)
+    # Return the first front of non-dominated individuals
     return tools.sortNondominated(pop, k=len(pop), first_front_only=True)[0]
 
 def run_single(obj_func, popsize, ngen, cxpb, mutpb, lows, highs, *args):
@@ -322,9 +338,13 @@ def run_single(obj_func, popsize, ngen, cxpb, mutpb, lows, highs, *args):
         pass # Classes don't exist yet, which is fine
 
     # Define the fitness function (minimizing a single objective)
-    creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
+    # Check if FitnessMin already exists before creating
+    if not hasattr(creator, 'FitnessMin'):
+        creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
     # Define the individual as a list with the defined fitness attribute
-    creator.create("Individual", list, fitness=creator.FitnessMin)
+    # Check if Individual already exists before creating
+    if not hasattr(creator, 'Individual'):
+        creator.create("Individual", list, fitness=creator.FitnessMin)
 
     toolbox = base.Toolbox()
     # Register a function to create random floats within the defined bounds for each material
@@ -371,7 +391,7 @@ def run_single(obj_func, popsize, ngen, cxpb, mutpb, lows, highs, *args):
         ind.fitness.values = fit
 
     # Create a Hall of Fame to store the best individual
-    hof = tools.HallofFame(1)
+    hof = tools.HallOfFame(1)
     # Run the Simple Evolutionary Algorithm
     algorithms.eaSimple(pop, toolbox, cxpb=cxpb, mutpb=mutpb, ngen=ngen, halloffame=hof, verbose=False)
     # Return the best individual from the Hall of Fame
@@ -427,7 +447,7 @@ if merged_df is not None:
                 min_value=0,
                 max_value=100,
                 value=global_dev,
-                key=f"dev_{mat}",
+                key=f"dev_{mat}", # Added unique key
                 help=f"Percentage deviation from the base amount for {mat}."
             )
             # Ensure lows are not negative
