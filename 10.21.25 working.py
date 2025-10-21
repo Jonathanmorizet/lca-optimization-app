@@ -422,7 +422,9 @@ if st.button("Run Optimization", type="primary"):
             {"scenario": f"Single Impact - {selected_impact}", "results": df_out}
         )
 
-# Download
+# ===============================
+# Download merged data
+# ===============================
 if st.button("Download Merged Data as Excel"):
     output = BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
@@ -432,4 +434,5 @@ if st.button("Download Merged Data as Excel"):
         label="Download Excel File",
         data=output,
         file_name="merged_totals_for_optimization.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.s
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
