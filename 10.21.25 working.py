@@ -8,7 +8,7 @@ import subprocess
 import sys
 from io import BytesIO
 
-# --- Make sure DEAP is present ---
+# --- Ensure DEAP is installed ---
 try:
     from deap import base, creator, tools, algorithms
 except Exception:
@@ -26,9 +26,13 @@ CORE_ID_COLS = ["Year", "Material", "Unit", "Amount"]
 def _num(s):
     return pd.to_numeric(s, errors="coerce")
 
+def _lower_list(cols):
+    # robust lower: stringify first
+    return [str(c).strip().lower() for c in cols]
+
 def find_cost_col(cols):
-    keys = ["unit cost", "cost per unit", "unit $", "price"]
-    lower = [c.lower() for c in cols]
+    keys = ["unit cost", "cost per unit", "unit $", "price", "unit_cost", "unit-cost"]
+    lower = _lower_list(cols)
     for k in keys:
         for i, c in enumerate(lower):
             if k in c:
@@ -36,8 +40,8 @@ def find_cost_col(cols):
     return None
 
 def find_gwp_col(cols):
-    keys = ["kg co2-eq/unit", "kg co2 eq/unit", "climate change", "gwp"]
-    lower = [c.lower() for c in cols]
+    keys = ["kg co2-eq/unit", "kg co2 eq/unit", "kg co2-eq per unit", "climate change", "gwp"]
+    lower = _lower_list(cols)
     for k in keys:
         for i, c in enumerate(lower):
             if k in c:
@@ -46,7 +50,6 @@ def find_gwp_col(cols):
 
 def detect_impact_cols(df, cost_col):
     exclude = set(CORE_ID_COLS + ([cost_col] if cost_col else []))
-    # numeric columns only, excluding the core
     cols = [c for c in df.columns if c not in exclude and pd.api.types.is_numeric_dtype(df[c])]
     return cols
 
@@ -55,111 +58,114 @@ def coerce_numeric(df, extra_numeric_cols=None):
     for c in ["Amount"] + extra_numeric_cols:
         if c in df.columns:
             df[c] = _num(df[c]).fillna(0.0)
-    # try to coerce all non-keys in costs/impacts later
     return df
 
 def merge_by_headers(workbook):
-    """Support legacy 3-sheet style:
-       Sheet A (Inputs): has Material, Unit, Amount, Year (Year optional)
-       Sheet B (Costs):  has Material, Unit, a cost-like column
-       Sheet C (Impacts): has Material, Unit, one or more impact columns (incl. GWP)
-    """
+    """Support 3-sheet style by content sniffing (robust to header types)."""
     inputs = None
     costs  = None
     impacts = None
 
     for name, df in workbook.items():
-        cols = [c.lower() for c in df.columns]
-        if {"material","unit","amount"}.issubset(set(cols)):
-            inputs = df.copy()
-        elif {"material","unit"}.issubset(set(cols)) and any(("cost" in c) or ("price" in c) for c in cols):
-            costs = df.copy()
-        elif {"material","unit"}.issubset(set(cols)) and any(("co2" in c) or ("gwp" in c) or ("climate" in c) for c in cols):
-            impacts = df.copy()
+        lcols = set(_lower_list(df.columns))
+        # Inputs: needs material/unit/amount (year optional)
+        if {"material","unit","amount"}.issubset(lcols):
+            inputs = df.copy() if inputs is None else inputs  # prefer first
+        # Costs: material/unit and any 'cost' or 'price' header
+        if {"material","unit"}.issubset(lcols) and any(("cost" in c) or ("price" in c) for c in lcols):
+            costs = df.copy() if costs is None else costs
+        # Impacts: material/unit and any gwp/co2/climate column
+        if {"material","unit"}.issubset(lcols) and any(("co2" in c) or ("gwp" in c) or ("climate" in c) for c in lcols):
+            impacts = df.copy() if impacts is None else impacts
 
     if inputs is None:
         return None, "Could not find an Inputs sheet with at least Material / Unit / Amount."
 
-    # normalize
     if "Year" not in inputs.columns:
         inputs["Year"] = 0
     inputs = coerce_numeric(inputs, extra_numeric_cols=["Year"])
 
-    # costs
+    # normalize cost frame
     if costs is None:
         costs = inputs[["Material","Unit"]].copy()
         costs["Unit Cost ($)"] = 0.0
-    # create a consistent cost column name
-    ccol = find_cost_col(costs.columns) or "Unit Cost ($)"
-    if ccol not in costs.columns:
-        costs[ccol] = 0.0
-    costs[ccol] = _num(costs[ccol]).fillna(0.0)
 
-    # impacts
+    cost_col = find_cost_col(costs.columns) or "Unit Cost ($)"
+    if cost_col not in costs.columns:
+        costs[cost_col] = 0.0
+    costs[cost_col] = _num(costs[cost_col]).fillna(0.0)
+
+    # normalize impacts
     if impacts is None:
         impacts = inputs[["Material","Unit"]].copy()
-        # create blank GWP column at minimum
         impacts["kg CO2-Eq/Unit"] = 0.0
-    # coerce all non-id cols to numeric
+    # coerce all non-id columns to numeric where possible
     for c in impacts.columns:
         if c not in ["Material","Unit"]:
             impacts[c] = _num(impacts[c]).fillna(0.0)
 
-    # Merge
+    # merge
     merged = inputs.merge(costs, on=["Material","Unit"], how="left")
     merged = merged.merge(impacts, on=["Material","Unit"], how="left")
-
     return merged.fillna(0.0), None
 
 # ------------------------------
-# Load & prepare
+# Load & prepare (FIX for TypeError)
 # ------------------------------
 @st.cache_data
 def load_data(file):
     """
     Returns:
-        raw_df (as uploaded or merged across sheets)
-        rolled_df (totals by Material+Unit)
-        cost_col (name)
-        gwp_col (name)
-        impact_cols (list[str])
+        raw_df, rolled_df, cost_col, gwp_col, impact_cols, err
     """
     if file is None:
         return None, None, None, None, None, "No file uploaded."
 
-    name = file.name.lower()
+    name = str(file.name).lower()
     if name.endswith(".csv"):
         df = pd.read_csv(file)
         if not {"Material","Unit","Amount"}.issubset(df.columns):
-            return None, None, None, None, None, "CSV must include at least Material, Unit, Amount (and optional Year)."
+            return None, None, None, None, None, "CSV must include at least Material, Unit, Amount (Year optional)."
         if "Year" not in df.columns:
             df["Year"] = 0
         df = coerce_numeric(df, extra_numeric_cols=["Year"])
+        # try to coerce all other numeric-ish columns
+        for c in df.columns:
+            if c not in ["Material","Unit","Year","Amount"]:
+                df[c] = _num(df[c]).fillna(df[c] if pd.api.types.is_numeric_dtype(df[c]) else 0.0)
+
     else:
-        # excel
+        # Excel workbook
         book = pd.read_excel(file, sheet_name=None)
-        # If any sheet is already "merged" (has Material,Unit,Amount and also any impact or cost), pick it
+
+        # Check for a single already-merged sheet first
         merged_candidates = []
         for nm, d in book.items():
             if {"Material","Unit","Amount"}.issubset(d.columns):
                 merged_candidates.append(d)
-        if len(merged_candidates) == 1 and any(
-            any(("cost" in c.lower()) or ("co2" in c.lower()) or ("gwp" in c.lower()) for c in merged_candidates[0].columns)
-        ):
+
+        use_merged = False
+        if len(merged_candidates) == 1:
+            # FIX: make sure we always treat headers as strings here
+            lower_cols = _lower_list(merged_candidates[0].columns)
+            has_cost_or_impact = any(("cost" in c) or ("co2" in c) or ("gwp" in c) or ("climate" in c) for c in lower_cols)
+            if has_cost_or_impact:
+                use_merged = True
+
+        if use_merged:
             df = merged_candidates[0].copy()
             if "Year" not in df.columns:
                 df["Year"] = 0
             df = coerce_numeric(df, extra_numeric_cols=["Year"])
-            # coerce other numeric cols
             for c in df.columns:
-                if c not in ["Material","Unit","Year"]:
+                if c not in ["Material","Unit","Year","Amount"]:
                     df[c] = _num(df[c]).fillna(df[c] if pd.api.types.is_numeric_dtype(df[c]) else 0.0)
         else:
             df, err = merge_by_headers(book)
             if err:
                 return None, None, None, None, None, err
 
-    # find cost column (or create)
+    # Detect cost & GWP columns (create if missing)
     cost_col = find_cost_col(df.columns)
     if cost_col is None:
         cost_col = "Unit Cost ($)"
@@ -167,7 +173,6 @@ def load_data(file):
     else:
         df[cost_col] = _num(df[cost_col]).fillna(0.0)
 
-    # find gwp column (or create)
     gwp_col = find_gwp_col(df.columns)
     if gwp_col is None:
         gwp_col = "kg CO2-Eq/Unit"
@@ -176,9 +181,8 @@ def load_data(file):
     else:
         df[gwp_col] = _num(df[gwp_col]).fillna(0.0)
 
-    # roll totals by Material+Unit (keep one row per Material for optimization)
+    # Roll totals by Material+Unit
     rolled = df.groupby(["Material","Unit"], as_index=False).agg({"Amount":"sum"})
-    # bring over first non-null cost/impact values per material+unit
     for c in df.columns:
         if c not in ["Year","Amount"]:
             rolled[c] = (df.groupby(["Material","Unit"])[c]
@@ -186,12 +190,11 @@ def load_data(file):
                          .reset_index(drop=True))
     rolled = rolled.fillna(0.0)
 
-    # detect impact columns
     impact_cols = detect_impact_cols(rolled, cost_col)
     return df, rolled, cost_col, gwp_col, impact_cols, None
 
 # ------------------------------
-# DEAP evals & runners
+# DEAP evaluation functions
 # ------------------------------
 def eval_cost_gwp(ind, rolled_df, cost_col, gwp_col):
     x = np.maximum(0.0, np.asarray(ind, dtype=float))
@@ -210,7 +213,7 @@ def eval_single_impact(ind, rolled_df, impact_col):
 def eval_cost_plus_sum_impacts(ind, rolled_df, impact_cols, cost_col, a_cost=1.0, a_imp=1.0):
     x = np.maximum(0.0, np.asarray(ind, dtype=float))
     total_cost = np.dot(x, rolled_df[cost_col].to_numpy(float))
-    impacts = rolled_df[impact_cols].to_numpy(float)  # (n, m)
+    impacts = rolled_df[impact_cols].to_numpy(float)
     total_imp = float(np.dot(x, impacts).sum())
     return (a_cost * total_cost + a_imp * total_imp,)
 
@@ -277,7 +280,7 @@ def run_single(obj, popsize, ngen, cxpb, mutpb, lows, highs, *args, **kwargs):
     for ind, fit in zip(pop, fitnesses):
         ind.fitness.values = fit
 
-    hof = tools.HallOfFame(1)   # correct name
+    hof = tools.HallOfFame(1)
     algorithms.eaSimple(pop, toolbox, cxpb=cxpb, mutpb=mutpb, ngen=ngen, halloffame=hof, verbose=False)
     return hof[0] if len(hof) else None
 
@@ -290,13 +293,10 @@ uploaded = st.file_uploader("Upload merged table or 3-sheet workbook (.csv / .xl
 raw_df, rolled_df, cost_col, gwp_col, impact_cols, err = load_data(uploaded)
 
 if err:
-    st.info(err)
-    st.stop()
+    st.info(err); st.stop()
 if rolled_df is None:
-    st.info("Upload a valid file to begin.")
-    st.stop()
+    st.info("Upload a valid file to begin."); st.stop()
 
-# Show merged totals table
 st.success("File uploaded and data processed successfully!")
 st.dataframe(rolled_df, use_container_width=True)
 
@@ -331,7 +331,7 @@ lows = np.copy(base_amounts)
 highs = np.copy(base_amounts)
 if use_custom_bounds:
     for i, mat in enumerate(materials):
-        dev = st.sidebar.number_input(f"{mat}", min_value=0, max_value=100, value=global_dev, key=f"bound_{i}")
+        dev = st.sidebar.number_input(f"{mat}", min_value=0, max_value=100, value=global_dev, key=f"b_{i}")
         lows[i]  = max(0.0, base_amounts[i] * (1 - dev/100))
         highs[i] =           base_amounts[i] * (1 + dev/100)
 else:
@@ -355,6 +355,14 @@ if scenario == "Optimize Single Impact":
 # ------------------------------
 # RUN
 # ------------------------------
+def export_per_year(opt_amounts):
+    scale = np.divide(opt_amounts, base_amounts, out=np.ones_like(opt_amounts), where=base_amounts>0)
+    scale_map = dict(zip(rolled_df["Material"]+"||"+rolled_df["Unit"], scale))
+    tmp = raw_df.copy()
+    keys = tmp["Material"]+"||"+tmp["Unit"]
+    tmp["Optimized Amount"] = tmp["Amount"] * keys.map(scale_map).fillna(1.0)
+    return tmp
+
 if st.button("Run Optimization", type="primary"):
     st.subheader(f"Running: {scenario}")
 
@@ -374,33 +382,24 @@ if st.button("Run Optimization", type="primary"):
             ax.set_title("Pareto Front")
             st.pyplot(fig)
 
-            # per-tree view
             per_tree_df = df_out.copy()
             per_tree_df["Cost / tree"] = per_tree_df["Total Cost"] / PER_TREE
             per_tree_df["GWP / tree"]  = per_tree_df["Total GWP"]  / PER_TREE
             st.dataframe(per_tree_df[["Cost / tree","GWP / tree"]], use_container_width=True)
 
-            # also expose one concrete optimized inventory (pick the min-cost point)
-            best = min(pareto, key=lambda x: x.fitness.values[0])
+            best = min(pareto, key=lambda x: x.fitness.values[0])  # example export: min-cost point
             opt_amounts = np.maximum(0.0, np.array(best, dtype=float))
             per_mat = rolled_df[["Material","Unit"]].copy()
             per_mat["Base Amount"] = base_amounts
             per_mat["Optimized Amount"] = opt_amounts
-            st.markdown("#### Example optimized inventory (min-cost point on Pareto)")
+            st.markdown("#### Example optimized inventory (min-cost on Pareto)")
             st.dataframe(per_mat, use_container_width=True)
 
-            # per-year scaling export
-            scale = np.divide(opt_amounts, base_amounts, out=np.ones_like(opt_amounts), where=base_amounts>0)
-            scale_map = dict(zip(rolled_df["Material"]+"||"+rolled_df["Unit"], scale))
-            tmp = raw_df.copy()
-            keys = tmp["Material"]+"||"+tmp["Unit"]
-            tmp["Optimized Amount"] = tmp["Amount"] * keys.map(scale_map).fillna(1.0)
-            st.download_button(
-                "Download optimized per-year inventory (CSV)",
-                data=tmp.to_csv(index=False).encode("utf-8"),
-                file_name="optimized_inventory_per_year.csv",
-                mime="text/csv"
-            )
+            out_csv = export_per_year(opt_amounts).to_csv(index=False).encode("utf-8")
+            st.download_button("Download optimized per-year inventory (CSV)",
+                               data=out_csv,
+                               file_name="optimized_inventory_per_year.csv",
+                               mime="text/csv")
 
     elif scenario == "Optimize Cost + Combined Impact":
         best = run_single(eval_cost_plus_sum_impacts, popsize, ngen, cxpb, mutpb,
@@ -415,18 +414,11 @@ if st.button("Run Optimization", type="primary"):
             st.metric("Objective (Cost + ΣImpacts)", f"{best.fitness.values[0]:,.2f}")
             st.dataframe(out, use_container_width=True)
 
-            # export per-year
-            scale = np.divide(opt, base_amounts, out=np.ones_like(opt), where=base_amounts>0)
-            scale_map = dict(zip(rolled_df["Material"]+"||"+rolled_df["Unit"], scale))
-            tmp = raw_df.copy()
-            keys = tmp["Material"]+"||"+tmp["Unit"]
-            tmp["Optimized Amount"] = tmp["Amount"] * keys.map(scale_map).fillna(1.0)
-            st.download_button(
-                "Download optimized per-year inventory (CSV)",
-                data=tmp.to_csv(index=False).encode("utf-8"),
-                file_name="optimized_inventory_per_year.csv",
-                mime="text/csv"
-            )
+            out_csv = export_per_year(opt).to_csv(index=False).encode("utf-8")
+            st.download_button("Download optimized per-year inventory (CSV)",
+                               data=out_csv,
+                               file_name="optimized_inventory_per_year.csv",
+                               mime="text/csv")
 
     elif scenario == "Optimize Single Impact":
         if not selected_impact:
@@ -444,18 +436,11 @@ if st.button("Run Optimization", type="primary"):
                 st.metric(selected_impact, f"{best.fitness.values[0]:,.4f}")
                 st.dataframe(out, use_container_width=True)
 
-                # export per-year
-                scale = np.divide(opt, base_amounts, out=np.ones_like(opt), where=base_amounts>0)
-                scale_map = dict(zip(rolled_df["Material"]+"||"+rolled_df["Unit"], scale))
-                tmp = raw_df.copy()
-                keys = tmp["Material"]+"||"+tmp["Unit"]
-                tmp["Optimized Amount"] = tmp["Amount"] * keys.map(scale_map).fillna(1.0)
-                st.download_button(
-                    "Download optimized per-year inventory (CSV)",
-                    data=tmp.to_csv(index=False).encode("utf-8"),
-                    file_name="optimized_inventory_per_year.csv",
-                    mime="text/csv"
-                )
+                out_csv = export_per_year(opt).to_csv(index=False).encode("utf-8")
+                st.download_button("Download optimized per-year inventory (CSV)",
+                                   data=out_csv,
+                                   file_name="optimized_inventory_per_year.csv",
+                                   mime="text/csv")
 
     elif scenario == "Optimize Cost Only":
         best = run_single(eval_cost_only, popsize, ngen, cxpb, mutpb,
@@ -470,20 +455,13 @@ if st.button("Run Optimization", type="primary"):
             st.metric("Min Cost ($)", f"{best.fitness.values[0]:,.2f}")
             st.dataframe(out, use_container_width=True)
 
-            # export per-year
-            scale = np.divide(opt, base_amounts, out=np.ones_like(opt), where=base_amounts>0)
-            scale_map = dict(zip(rolled_df["Material"]+"||"+rolled_df["Unit"], scale))
-            tmp = raw_df.copy()
-            keys = tmp["Material"]+"||"+tmp["Unit"]
-            tmp["Optimized Amount"] = tmp["Amount"] * keys.map(scale_map).fillna(1.0)
-            st.download_button(
-                "Download optimized per-year inventory (CSV)",
-                data=tmp.to_csv(index=False).encode("utf-8"),
-                file_name="optimized_inventory_per_year.csv",
-                mime="text/csv"
-            )
+            out_csv = export_per_year(opt).to_csv(index=False).encode("utf-8")
+            st.download_button("Download optimized per-year inventory (CSV)",
+                               data=out_csv,
+                               file_name="optimized_inventory_per_year.csv",
+                               mime="text/csv")
 
-# Download the rolled/merged table you’re optimizing
+# Download merged totals (Excel)
 if st.button("Download merged totals (Excel)"):
     bio = BytesIO()
     with pd.ExcelWriter(bio, engine="xlsxwriter") as w:
