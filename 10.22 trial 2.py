@@ -96,6 +96,94 @@ def evaluate_cost_gwp_constrained(ind, costs, impact_matrix, impact_cols, base_a
     
     return total_cost + penalty, gwp + penalty
 
+def evaluate_budget_constrained(ind, costs, impact_matrix, impact_cols, base_amounts, 
+                                baseline_trees, scale_materials_mask, efficiency_materials_mask,
+                                max_scale_deviation, max_efficiency_deviation, budget_limit):
+    """
+    Maximize trees while minimizing GWP, subject to budget constraint.
+    Returns: (-trees, gwp) to maximize trees and minimize gwp
+    """
+    production_scale = ind[0]
+    efficiency_factors = np.array(ind[1:])
+    
+    final_amounts = np.copy(base_amounts)
+    for i in range(len(base_amounts)):
+        if scale_materials_mask[i]:
+            final_amounts[i] = base_amounts[i] * production_scale
+        elif efficiency_materials_mask[i]:
+            efficiency_idx = np.where(efficiency_materials_mask[:i])[0].size
+            final_amounts[i] = base_amounts[i] * production_scale * efficiency_factors[efficiency_idx]
+    
+    total_cost = np.dot(final_amounts, costs)
+    actual_trees = baseline_trees * production_scale
+    
+    # Heavy penalty for exceeding budget
+    budget_penalty = 0
+    if total_cost > budget_limit:
+        budget_penalty = 100000 * (total_cost - budget_limit)
+    
+    # Penalties for violating bounds
+    penalty = budget_penalty
+    if production_scale < (1 - max_scale_deviation) or production_scale > (1 + max_scale_deviation):
+        penalty += 10000 * abs(production_scale - np.clip(production_scale, 1 - max_scale_deviation, 1 + max_scale_deviation))
+    
+    for ef in efficiency_factors:
+        if ef < (1 - max_efficiency_deviation) or ef > (1 + max_efficiency_deviation):
+            penalty += 10000 * abs(ef - np.clip(ef, 1 - max_efficiency_deviation, 1 + max_efficiency_deviation))
+    
+    gwp = 0.0
+    try:
+        gwp_idx = impact_cols.index("kg CO2-Eq/Unit")
+        gwp = np.dot(final_amounts, impact_matrix[:, gwp_idx])
+    except ValueError:
+        pass
+    
+    # Return negative trees (to maximize) and GWP (to minimize)
+    return -actual_trees + penalty, gwp + penalty
+
+def evaluate_compliance_constrained(ind, costs, impact_matrix, impact_cols, base_amounts,
+                                   baseline_trees, scale_materials_mask, efficiency_materials_mask,
+                                   max_scale_deviation, max_efficiency_deviation, gwp_target):
+    """
+    Minimize cost while meeting GWP reduction target.
+    Returns: (cost,) with penalty for exceeding GWP target
+    """
+    production_scale = ind[0]
+    efficiency_factors = np.array(ind[1:])
+    
+    final_amounts = np.copy(base_amounts)
+    for i in range(len(base_amounts)):
+        if scale_materials_mask[i]:
+            final_amounts[i] = base_amounts[i] * production_scale
+        elif efficiency_materials_mask[i]:
+            efficiency_idx = np.where(efficiency_materials_mask[:i])[0].size
+            final_amounts[i] = base_amounts[i] * production_scale * efficiency_factors[efficiency_idx]
+    
+    total_cost = np.dot(final_amounts, costs)
+    
+    gwp = 0.0
+    try:
+        gwp_idx = impact_cols.index("kg CO2-Eq/Unit")
+        gwp = np.dot(final_amounts, impact_matrix[:, gwp_idx])
+    except ValueError:
+        pass
+    
+    # Heavy penalty for exceeding GWP target
+    gwp_penalty = 0
+    if gwp > gwp_target:
+        gwp_penalty = 100000 * (gwp - gwp_target)
+    
+    # Penalties for violating bounds
+    penalty = gwp_penalty
+    if production_scale < (1 - max_scale_deviation) or production_scale > (1 + max_scale_deviation):
+        penalty += 10000 * abs(production_scale - np.clip(production_scale, 1 - max_scale_deviation, 1 + max_scale_deviation))
+    
+    for ef in efficiency_factors:
+        if ef < (1 - max_efficiency_deviation) or ef > (1 + max_efficiency_deviation):
+            penalty += 10000 * abs(ef - np.clip(ef, 1 - max_efficiency_deviation, 1 + max_efficiency_deviation))
+    
+    return (total_cost + penalty,)
+
 def evaluate_cost_only_constrained(ind, costs, base_amounts, baseline_trees, 
                                    scale_materials_mask, efficiency_materials_mask,
                                    max_scale_deviation, max_efficiency_deviation):
@@ -155,7 +243,8 @@ def evaluate_single_impact_constrained(ind, matrix, colname, cols, base_amounts,
 
 # Optimization Logic
 def run_nsga2_constrained(popsize, ngen, cxpb, mutpb, costs, matrix, impact_cols, base_amounts, 
-                         baseline_trees, scale_mask, efficiency_mask, max_scale_dev, max_eff_dev):
+                         baseline_trees, scale_mask, efficiency_mask, max_scale_dev, max_eff_dev,
+                         eval_func=None, **eval_kwargs):
     """Run NSGA-II with production scale and efficiency optimization."""
     try:
         del creator.FitnessMin
@@ -177,11 +266,17 @@ def run_nsga2_constrained(popsize, ngen, cxpb, mutpb, costs, matrix, impact_cols
     
     toolbox.register("individual", tools.initIterate, creator.Individual, create_individual)
     toolbox.register("population", tools.initRepeat, list, toolbox.individual)
-    toolbox.register("evaluate", evaluate_cost_gwp_constrained, 
+    
+    # Use custom eval function if provided, otherwise use default
+    if eval_func is None:
+        eval_func = evaluate_cost_gwp_constrained
+    
+    toolbox.register("evaluate", eval_func, 
                     costs=costs, impact_matrix=matrix, impact_cols=impact_cols, 
                     base_amounts=base_amounts, baseline_trees=baseline_trees,
                     scale_materials_mask=scale_mask, efficiency_materials_mask=efficiency_mask,
-                    max_scale_deviation=max_scale_dev, max_efficiency_deviation=max_eff_dev)
+                    max_scale_deviation=max_scale_dev, max_efficiency_deviation=max_eff_dev,
+                    **eval_kwargs)
     toolbox.register("mate", tools.cxBlend, alpha=0.3)
 
     def bounded_mutate(ind, mu, sigma, indpb):
@@ -389,6 +484,8 @@ if merged_df is not None:
     # Sidebar controls
     scenario = st.sidebar.selectbox("Optimization Scenario", [
         "Optimize Cost vs GWP (Tradeoff)",
+        "Budget-Constrained: Maximize Trees, Minimize GWP",
+        "Compliance: Meet GWP Target at Lowest Cost",
         "Optimize Single Impact",
         "Optimize Cost Only"
     ])
@@ -399,8 +496,43 @@ if merged_df is not None:
     cxpb = st.sidebar.slider("Crossover Probability", 0.0, 1.0, 0.7)
     mutpb = st.sidebar.slider("Mutation Probability", 0.0, 1.0, 0.3)
 
+    # Scenario-specific inputs
+    budget_limit = None
+    gwp_reduction_pct = None
     selected_impact = None
-    if scenario == "Optimize Single Impact":
+    
+    if scenario == "Budget-Constrained: Maximize Trees, Minimize GWP":
+        baseline_cost = np.dot(base_amounts, costs)
+        st.sidebar.markdown("### 💰 Budget Constraint")
+        budget_limit = st.sidebar.number_input(
+            "Budget Limit ($)", 
+            min_value=float(baseline_cost * 0.5), 
+            max_value=float(baseline_cost * 2.0),
+            value=float(baseline_cost),
+            step=100.0
+        )
+        st.sidebar.info(f"Baseline cost: ${baseline_cost:.2f}")
+        
+    elif scenario == "Compliance: Meet GWP Target at Lowest Cost":
+        if "kg CO2-Eq/Unit" in traci_impact_cols:
+            gwp_idx = traci_impact_cols.index("kg CO2-Eq/Unit")
+            baseline_gwp = np.dot(base_amounts, impact_matrix[:, gwp_idx])
+            
+            st.sidebar.markdown("### 🌍 GWP Reduction Target")
+            gwp_reduction_pct = st.sidebar.slider(
+                "GWP Reduction (%)",
+                min_value=0,
+                max_value=50,
+                value=15,
+                step=5
+            )
+            gwp_target = baseline_gwp * (1 - gwp_reduction_pct / 100.0)
+            st.sidebar.info(f"Baseline GWP: {baseline_gwp:.2f} kg CO2-Eq")
+            st.sidebar.info(f"Target GWP: {gwp_target:.2f} kg CO2-Eq")
+        else:
+            st.sidebar.error("GWP data not available in the dataset")
+            
+    elif scenario == "Optimize Single Impact":
         selected_impact = st.selectbox("Select TRACI Impact", traci_impact_cols)
 
     # Calculate baseline metrics
@@ -418,7 +550,241 @@ if merged_df is not None:
     if st.button("Run Optimization"):
         st.subheader(f"Running: {scenario}")
 
-        if scenario == "Optimize Cost vs GWP (Tradeoff)":
+        if scenario == "Budget-Constrained: Maximize Trees, Minimize GWP":
+            with st.spinner("Running budget-constrained optimization..."):
+                pareto = run_nsga2_constrained(
+                    popsize, ngen, cxpb, mutpb, costs, impact_matrix, 
+                    traci_impact_cols, base_amounts, baseline_trees, 
+                    scale_materials_mask, efficiency_materials_mask, 
+                    max_scale_deviation, max_efficiency_deviation,
+                    eval_func=evaluate_budget_constrained,
+                    budget_limit=budget_limit
+                )
+                
+                results = []
+                for ind in pareto:
+                    production_scale = ind[0]
+                    efficiency_factors = np.array(ind[1:])
+                    
+                    final_amounts = np.copy(base_amounts)
+                    for i in range(len(base_amounts)):
+                        if scale_materials_mask[i]:
+                            final_amounts[i] = base_amounts[i] * production_scale
+                        elif efficiency_materials_mask[i]:
+                            efficiency_idx = np.where(efficiency_materials_mask[:i])[0].size
+                            final_amounts[i] = base_amounts[i] * production_scale * efficiency_factors[efficiency_idx]
+                    
+                    total_cost = np.dot(final_amounts, costs)
+                    actual_trees = baseline_trees * production_scale
+                    
+                    gwp_idx = traci_impact_cols.index("kg CO2-Eq/Unit")
+                    total_gwp = np.dot(final_amounts, impact_matrix[:, gwp_idx])
+                    
+                    # Only include feasible solutions (within budget)
+                    if total_cost <= budget_limit:
+                        cost_per_tree = total_cost / actual_trees
+                        gwp_per_tree = total_gwp / actual_trees
+                        
+                        results.append({
+                            "Trees": int(actual_trees),
+                            "Total Cost": total_cost,
+                            "Budget Used (%)": (total_cost / budget_limit * 100),
+                            "Total GWP": total_gwp,
+                            "Cost/Tree": cost_per_tree,
+                            "GWP/Tree": gwp_per_tree,
+                            "Production Scale": production_scale,
+                            "Individual": ind
+                        })
+                
+                if len(results) == 0:
+                    st.error("No feasible solutions found within budget constraint. Try increasing the budget or relaxing constraints.")
+                else:
+                    df_pareto = pd.DataFrame(results)
+                    df_pareto = df_pareto.sort_values("Trees", ascending=False)
+                    st.dataframe(df_pareto[["Trees", "Total Cost", "Budget Used (%)", "Total GWP", "Cost/Tree", "GWP/Tree"]])
+                    
+                    # Highlight best solution
+                    best_trees_idx = df_pareto["Trees"].idxmax()
+                    st.success(f"🎯 **Best Solution:** {df_pareto.loc[best_trees_idx, 'Trees']} trees using ${df_pareto.loc[best_trees_idx, 'Total Cost']:.2f} ({df_pareto.loc[best_trees_idx, 'Budget Used (%)']:.1f}% of budget)")
+                    
+                    # Plot results
+                    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+                    
+                    scatter1 = ax1.scatter(df_pareto["Total Cost"], df_pareto["Trees"], 
+                                          alpha=0.6, c=df_pareto["Total GWP"], cmap='RdYlGn_r', s=100)
+                    ax1.axvline(budget_limit, color='red', linestyle='--', label=f'Budget: ${budget_limit:.0f}')
+                    ax1.scatter([baseline_cost], [baseline_trees], color='red', s=200, marker='*', 
+                              label='Baseline', zorder=5, edgecolors='black', linewidths=2)
+                    ax1.set_xlabel("Total Cost ($)")
+                    ax1.set_ylabel("Number of Trees")
+                    ax1.set_title("Budget-Constrained Solutions (color=GWP)")
+                    ax1.legend()
+                    ax1.grid(True, alpha=0.3)
+                    plt.colorbar(scatter1, ax=ax1, label='Total GWP (kg CO2-Eq)')
+                    
+                    scatter2 = ax2.scatter(df_pareto["Trees"], df_pareto["Total GWP"], 
+                                          alpha=0.6, c=df_pareto["Total Cost"], cmap='viridis', s=100)
+                    ax2.scatter([baseline_trees], [baseline_gwp], color='red', s=200, marker='*', 
+                              label='Baseline', zorder=5, edgecolors='black', linewidths=2)
+                    ax2.set_xlabel("Number of Trees")
+                    ax2.set_ylabel("Total GWP (kg CO2-Eq)")
+                    ax2.set_title("Trees vs Environmental Impact (color=cost)")
+                    ax2.legend()
+                    ax2.grid(True, alpha=0.3)
+                    plt.colorbar(scatter2, ax=ax2, label='Total Cost ($)')
+                    
+                    st.pyplot(fig)
+                    
+                    # Allow user to select a solution
+                    st.markdown("### 📋 Select a Solution to View Details")
+                    solution_idx = st.selectbox("Solution (sorted by trees)", 
+                                               range(len(df_pareto)), 
+                                               format_func=lambda x: f"Solution {x+1}: {df_pareto.iloc[x]['Trees']} trees, ${df_pareto.iloc[x]['Total Cost']:.2f}, {df_pareto.iloc[x]['Total GWP']:.2f} kg CO2-Eq")
+                    
+                    selected_row = df_pareto.iloc[solution_idx]
+                    selected_ind = selected_row["Individual"]
+                    production_scale = selected_ind[0]
+                    efficiency_factors = np.array(selected_ind[1:])
+                    
+                    final_amounts = np.copy(base_amounts)
+                    material_type = []
+                    for i in range(len(base_amounts)):
+                        if scale_materials_mask[i]:
+                            final_amounts[i] = base_amounts[i] * production_scale
+                            material_type.append("SCALE")
+                        elif efficiency_materials_mask[i]:
+                            efficiency_idx = np.where(efficiency_materials_mask[:i])[0].size
+                            final_amounts[i] = base_amounts[i] * production_scale * efficiency_factors[efficiency_idx]
+                            material_type.append("EFFICIENCY")
+                        else:
+                            material_type.append("FIXED")
+                    
+                    df_materials = pd.DataFrame({
+                        "Material": materials,
+                        "Type": material_type,
+                        "Base Amount": base_amounts,
+                        "Optimized Amount": final_amounts,
+                        "Change (%)": ((final_amounts - base_amounts) / base_amounts * 100),
+                        "Base Cost": base_amounts * costs,
+                        "Optimized Cost": final_amounts * costs
+                    })
+                    
+                    st.dataframe(df_materials)
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Trees", f"{int(selected_row['Trees'])}", 
+                                f"{((selected_row['Trees'] - baseline_trees) / baseline_trees * 100):+.1f}%")
+                    with col2:
+                        st.metric("Total Cost", f"${selected_row['Total Cost']:.2f}",
+                                f"{selected_row['Budget Used (%)']:.1f}% of budget")
+                    with col3:
+                        st.metric("Total GWP", f"{selected_row['Total GWP']:.2f} kg CO2-Eq",
+                                f"{((selected_row['Total GWP'] - baseline_gwp) / baseline_gwp * 100):+.1f}%")
+                    
+                    if 'history' not in st.session_state:
+                        st.session_state['history'] = []
+                    st.session_state.history.append({
+                        "scenario": f"Budget-Constrained (${budget_limit:.0f})", 
+                        "results": df_materials, 
+                        "pareto": df_pareto
+                    })
+
+        elif scenario == "Compliance: Meet GWP Target at Lowest Cost":
+            if "kg CO2-Eq/Unit" not in traci_impact_cols:
+                st.error("GWP data not available. Cannot run compliance optimization.")
+            else:
+                gwp_idx = traci_impact_cols.index("kg CO2-Eq/Unit")
+                baseline_gwp = np.dot(base_amounts, impact_matrix[:, gwp_idx])
+                gwp_target = baseline_gwp * (1 - gwp_reduction_pct / 100.0)
+                
+                with st.spinner(f"Finding cheapest way to reduce GWP by {gwp_reduction_pct}%..."):
+                    best = run_single_constrained(
+                        evaluate_compliance_constrained, popsize, ngen, cxpb, mutpb, 
+                        base_amounts, baseline_trees, scale_materials_mask, 
+                        efficiency_materials_mask, max_scale_deviation, 
+                        max_efficiency_deviation, 
+                        costs, impact_matrix, traci_impact_cols, gwp_target
+                    )
+                    
+                    production_scale = best[0]
+                    efficiency_factors = np.array(best[1:])
+                    
+                    final_amounts = np.copy(base_amounts)
+                    material_type = []
+                    for i in range(len(base_amounts)):
+                        if scale_materials_mask[i]:
+                            final_amounts[i] = base_amounts[i] * production_scale
+                            material_type.append("SCALE")
+                        elif efficiency_materials_mask[i]:
+                            efficiency_idx = np.where(efficiency_materials_mask[:i])[0].size
+                            final_amounts[i] = base_amounts[i] * production_scale * efficiency_factors[efficiency_idx]
+                            material_type.append("EFFICIENCY")
+                        else:
+                            material_type.append("FIXED")
+                    
+                    actual_trees = baseline_trees * production_scale
+                    total_cost = np.dot(final_amounts, costs)
+                    total_gwp = np.dot(final_amounts, impact_matrix[:, gwp_idx])
+                    
+                    # Check if target was met
+                    if total_gwp <= gwp_target * 1.01:  # Allow 1% tolerance
+                        st.success(f"✅ **Compliance achieved!** GWP reduced to {total_gwp:.2f} kg CO2-Eq (target: {gwp_target:.2f})")
+                        
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("Trees", f"{int(actual_trees)}", 
+                                    f"{((actual_trees - baseline_trees) / baseline_trees * 100):+.1f}%")
+                        with col2:
+                            st.metric("Total Cost", f"${total_cost:.2f}",
+                                    f"{((total_cost - baseline_cost) / baseline_cost * 100):+.1f}%")
+                        with col3:
+                            st.metric("Total GWP", f"{total_gwp:.2f} kg CO2-Eq",
+                                    f"-{gwp_reduction_pct}%")
+                        with col4:
+                            st.metric("GWP/Tree", f"{total_gwp/actual_trees:.2f} kg",
+                                    f"{((total_gwp/actual_trees - baseline_gwp_per_tree) / baseline_gwp_per_tree * 100):+.1f}%")
+                        
+                        # Show material changes
+                        df_materials = pd.DataFrame({
+                            "Material": materials,
+                            "Type": material_type,
+                            "Base Amount": base_amounts,
+                            "Optimized Amount": final_amounts,
+                            "Change (%)": ((final_amounts - base_amounts) / base_amounts * 100),
+                            "Cost Impact": (final_amounts - base_amounts) * costs,
+                            "GWP Impact": (final_amounts - base_amounts) * impact_matrix[:, gwp_idx]
+                        })
+                        
+                        # Highlight biggest contributors to reduction
+                        df_materials = df_materials.sort_values("GWP Impact")
+                        st.markdown("### 📊 Material Changes (sorted by GWP impact)")
+                        st.dataframe(df_materials)
+                        
+                        # Show key insights
+                        st.markdown("### 💡 Key Insights")
+                        biggest_gwp_reducers = df_materials[df_materials["GWP Impact"] < 0].head(3)
+                        if len(biggest_gwp_reducers) > 0:
+                            st.markdown("**Top GWP Reductions:**")
+                            for idx, row in biggest_gwp_reducers.iterrows():
+                                st.markdown(f"- **{row['Material']}**: {row['Change (%)']:.1f}% reduction → {abs(row['GWP Impact']):.2f} kg CO2-Eq saved (Cost: ${row['Cost Impact']:+.2f})")
+                        
+                        cost_increase = total_cost - baseline_cost
+                        gwp_decrease = baseline_gwp - total_gwp
+                        cost_per_kg_co2 = cost_increase / gwp_decrease if gwp_decrease > 0 else 0
+                        st.info(f"💰 **Cost of Compliance:** ${abs(cost_increase):.2f} {('increase' if cost_increase > 0 else 'savings')} = ${cost_per_kg_co2:.2f} per kg CO2-Eq reduced")
+                        
+                    else:
+                        st.error(f"❌ **Target not fully met.** Achieved {total_gwp:.2f} kg CO2-Eq (target: {gwp_target:.2f}). Try relaxing constraints or increasing generations.")
+                    
+                    if 'history' not in st.session_state:
+                        st.session_state['history'] = []
+                    st.session_state.history.append({
+                        "scenario": f"Compliance (-{gwp_reduction_pct}% GWP)", 
+                        "results": df_materials
+                    })
+
+        elif scenario == "Optimize Cost vs GWP (Tradeoff)":
             with st.spinner("Running NSGA-II optimization..."):
                 pareto = run_nsga2_constrained(popsize, ngen, cxpb, mutpb, costs, impact_matrix, 
                                               traci_impact_cols, base_amounts, baseline_trees, 
