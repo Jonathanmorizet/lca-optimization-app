@@ -474,36 +474,36 @@ if st.button("Run Optimization", type="primary"):
         else:
             st.info("GWP column not present in Pareto table for plotting.")
 
-         # Show a concrete optimized inventory: min-cost point on Pareto
-         best = min(pareto, key=lambda x: x.fitness.values[0])
-         opt = np.array(best, float)
-         inv = rolled_df[["Material","Unit"]].copy()
-         inv["Base Amount"] = base_amounts
-         inv["Optimized Amount"] = opt
-         st.markdown("#### Example optimized inventory (min-cost on Pareto)")
-         st.dataframe(inv, use_container_width=True)
+        # Show a concrete optimized inventory: min-cost point on Pareto
+        best = min(pareto, key=lambda x: x.fitness.values[0])
+        opt = np.array(best, float)
+        inv = rolled_df[["Material","Unit"]].copy()
+        inv["Base Amount"] = base_amounts
+        inv["Optimized Amount"] = opt
+        st.markdown("#### Example optimized inventory (min-cost on Pareto)")
+        st.dataframe(inv, use_container_width=True)
 
-         tot_cost = float(best.fitness.values[0])
-         # compute GWP from optimized vector to remain consistent with the displayed table
-         tot_gwp  = float(np.dot(np.asarray(best, float), rolled_df[gwp_col].to_numpy(float))) if gwp_col in rolled_df.columns else 0.0
-         st.metric("Cost / tree ($/tree)", f"{tot_cost/DEFAULT_TREES:,.2f}")
-         st.metric("GWP / tree (kg CO₂e/tree)", f"{tot_gwp/DEFAULT_TREES:,.2f}")
+        tot_cost = float(best.fitness.values[0])
+        # compute GWP from optimized vector to remain consistent with the displayed table
+        tot_gwp = float(np.dot(np.asarray(best, float), rolled_df[gwp_col].to_numpy(float))) if gwp_col in rolled_df.columns else 0.0
+        st.metric("Cost / tree ($/tree)", f"{tot_cost/DEFAULT_TREES:,.2f}")
+        st.metric("GWP / tree (kg CO₂e/tree)", f"{tot_gwp/DEFAULT_TREES:,.2f}")
 
-         # Per-year scaled CSV if Year present
-         if (raw_df is not None) and ("Year" in raw_df.columns):
-             ratio = np.divide(opt, base_amounts, out=np.ones_like(opt), where=(base_amounts>0))
-             key = list(zip(rolled_df["Material"], rolled_df["Unit"]))
-             scale = {k: r for k, r in zip(key, ratio)}
-             out = raw_df.copy()
-             out["Amount_Optimized"] = out.apply(
-                 lambda r: r["Amount"] * scale.get((r["Material"], r["Unit"]), 1.0), axis=1
-             )
-             st.download_button(
-                 "Download optimized per-year inventory (CSV)",
-                 out.to_csv(index=False).encode(),
-                 file_name="optimized_yearly_inventory.csv",
-                 mime="text/csv"
-             )
+        # Per-year scaled CSV if Year present
+        if (raw_df is not None) and ("Year" in raw_df.columns):
+            ratio = np.divide(opt, base_amounts, out=np.ones_like(opt), where=(base_amounts>0))
+            key = list(zip(rolled_df["Material"], rolled_df["Unit"]))
+            scale = {k: r for k, r in zip(key, ratio)}
+            out = raw_df.copy()
+            out["Amount_Optimized"] = out.apply(
+                lambda r: r["Amount"] * scale.get((r["Material"], r["Unit"]), 1.0), axis=1
+            )
+            st.download_button(
+                "Download optimized per-year inventory (CSV)",
+                out.to_csv(index=False).encode(),
+                file_name="optimized_yearly_inventory.csv",
+                mime="text/csv"
+            )
 
     elif scenario == "Optimize Cost + Combined Impact":
         best = run_single(
