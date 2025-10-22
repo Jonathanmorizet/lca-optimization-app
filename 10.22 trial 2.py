@@ -213,19 +213,19 @@ def run_nsga2_constrained(popsize, ngen, cxpb, mutpb, costs, matrix, impact_cols
         
         # Apply crossover and mutation
         for i in range(1, len(offspring), 2):
-            if random.random() < cxpb:
+            if random.random() < cxpb and i < len(offspring):
                 offspring[i-1], offspring[i] = toolbox.mate(offspring[i-1], offspring[i])
-                del offspring[i-1].fitness.values
-                del offspring[i].fitness.values
+                offspring[i-1].fitness.values = ()
+                offspring[i].fitness.values = ()
         
         for i in range(len(offspring)):
             if random.random() < mutpb:
                 offspring[i], = toolbox.mutate(offspring[i])
-                del offspring[i].fitness.values
+                offspring[i].fitness.values = ()
         
         # Evaluate individuals with invalid fitness
         invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
-        fitnesses = map(toolbox.evaluate, invalid_ind)
+        fitnesses = list(map(toolbox.evaluate, invalid_ind))
         for ind, fit in zip(invalid_ind, fitnesses):
             ind.fitness.values = fit
         
@@ -292,19 +292,19 @@ def run_single_constrained(obj_func, popsize, ngen, cxpb, mutpb, base_amounts, b
         
         # Apply crossover and mutation
         for i in range(1, len(offspring), 2):
-            if random.random() < cxpb:
+            if random.random() < cxpb and i < len(offspring):
                 offspring[i-1], offspring[i] = toolbox.mate(offspring[i-1], offspring[i])
-                del offspring[i-1].fitness.values
-                del offspring[i].fitness.values
+                offspring[i-1].fitness.values = ()
+                offspring[i].fitness.values = ()
         
         for i in range(len(offspring)):
             if random.random() < mutpb:
                 offspring[i], = toolbox.mutate(offspring[i])
-                del offspring[i].fitness.values
+                offspring[i].fitness.values = ()
         
         # Evaluate individuals with invalid fitness
         invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
-        fitnesses = map(toolbox.evaluate, invalid_ind)
+        fitnesses = list(map(toolbox.evaluate, invalid_ind))
         for ind, fit in zip(invalid_ind, fitnesses):
             ind.fitness.values = fit
         
