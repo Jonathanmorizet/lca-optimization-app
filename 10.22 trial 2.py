@@ -103,55 +103,10 @@ def evaluate_budget_constrained(ind, costs, impact_matrix, impact_cols, base_amo
     Maximize trees while minimizing GWP, subject to budget constraint.
     Returns: (-trees, gwp) to maximize trees and minimize gwp
     """
-    production_scale = ind[0]
-    efficiency_factors = np.array(ind[1:])
+    production_scale = float(ind[0])
+    efficiency_factors = np.array(ind[1:], dtype=float)
     
-    final_amounts = np.copy(base_amounts)
-    for i in range(len(base_amounts)):
-        if scale_materials_mask[i]:
-            final_amounts[i] = base_amounts[i] * production_scale
-        elif efficiency_materials_mask[i]:
-            efficiency_idx = np.where(efficiency_materials_mask[:i])[0].size
-            final_amounts[i] = base_amounts[i] * production_scale * efficiency_factors[efficiency_idx]
-    
-    total_cost = np.dot(final_amounts, costs)
-    actual_trees = baseline_trees * production_scale
-    
-    # Heavy penalty for exceeding budget
-    budget_penalty = 0
-    if total_cost > budget_limit:
-        budget_penalty = 100000 * (total_cost - budget_limit)
-    
-    # Penalties for violating bounds
-    penalty = budget_penalty
-    if production_scale < (1 - max_scale_deviation) or production_scale > (1 + max_scale_deviation):
-        penalty += 10000 * abs(production_scale - np.clip(production_scale, 1 - max_scale_deviation, 1 + max_scale_deviation))
-    
-    for ef in efficiency_factors:
-        if ef < (1 - max_efficiency_deviation) or ef > (1 + max_efficiency_deviation):
-            penalty += 10000 * abs(ef - np.clip(ef, 1 - max_efficiency_deviation, 1 + max_efficiency_deviation))
-    
-    gwp = 0.0
-    try:
-        gwp_idx = impact_cols.index("kg CO2-Eq/Unit")
-        gwp = np.dot(final_amounts, impact_matrix[:, gwp_idx])
-    except ValueError:
-        pass
-    
-    # Return negative trees (to maximize) and GWP (to minimize)
-    return -actual_trees + penalty, gwp + penalty
-
-def evaluate_compliance_constrained(ind, costs, impact_matrix, impact_cols, base_amounts,
-                                   baseline_trees, scale_materials_mask, efficiency_materials_mask,
-                                   max_scale_deviation, max_efficiency_deviation, gwp_target):
-    """
-    Minimize cost while meeting GWP reduction target.
-    Returns: (cost,) with penalty for exceeding GWP target
-    """
-    production_scale = ind[0]
-    efficiency_factors = np.array(ind[1:])
-    
-    final_amounts = np.copy(base_amounts)
+    final_amounts = np.copy(base_amounts).astype(float)
     for i in range(len(base_amounts)):
         if scale_materials_mask[i]:
             final_amounts[i] = base_amounts[i] * production_scale
@@ -160,12 +115,63 @@ def evaluate_compliance_constrained(ind, costs, impact_matrix, impact_cols, base
             if efficiency_idx < len(efficiency_factors):
                 final_amounts[i] = base_amounts[i] * production_scale * efficiency_factors[efficiency_idx]
     
-    total_cost = np.dot(final_amounts, costs)
+    total_cost = float(np.dot(final_amounts, costs))
+    actual_trees = baseline_trees * production_scale
+    
+    # Heavy penalty for exceeding budget
+    budget_penalty = 0.0
+    if total_cost > budget_limit:
+        budget_penalty = 100000.0 * (total_cost - budget_limit)
+    
+    # Penalties for violating bounds
+    penalty = budget_penalty
+    
+    if production_scale < (1 - max_scale_deviation):
+        penalty += 10000.0 * abs(production_scale - (1 - max_scale_deviation))
+    elif production_scale > (1 + max_scale_deviation):
+        penalty += 10000.0 * abs(production_scale - (1 + max_scale_deviation))
+    
+    for ef in efficiency_factors:
+        if ef < (1 - max_efficiency_deviation):
+            penalty += 10000.0 * abs(ef - (1 - max_efficiency_deviation))
+        elif ef > (1 + max_efficiency_deviation):
+            penalty += 10000.0 * abs(ef - (1 + max_efficiency_deviation))
     
     gwp = 0.0
     try:
         gwp_idx = impact_cols.index("kg CO2-Eq/Unit")
-        gwp = np.dot(final_amounts, impact_matrix[:, gwp_idx])
+        gwp = float(np.dot(final_amounts, impact_matrix[:, gwp_idx]))
+    except (ValueError, IndexError):
+        pass
+    
+    # Return negative trees (to maximize) and GWP (to minimize)
+    return float(-actual_trees + penalty), float(gwp + penalty)
+
+def evaluate_compliance_constrained(ind, costs, impact_matrix, impact_cols, base_amounts,
+                                   baseline_trees, scale_materials_mask, efficiency_materials_mask,
+                                   max_scale_deviation, max_efficiency_deviation, gwp_target):
+    """
+    Minimize cost while meeting GWP reduction target.
+    Returns: (cost,) with penalty for exceeding GWP target
+    """
+    production_scale = float(ind[0])
+    efficiency_factors = np.array(ind[1:], dtype=float)
+    
+    final_amounts = np.copy(base_amounts).astype(float)
+    for i in range(len(base_amounts)):
+        if scale_materials_mask[i]:
+            final_amounts[i] = base_amounts[i] * production_scale
+        elif efficiency_materials_mask[i]:
+            efficiency_idx = np.where(efficiency_materials_mask[:i])[0].size
+            if efficiency_idx < len(efficiency_factors):
+                final_amounts[i] = base_amounts[i] * production_scale * efficiency_factors[efficiency_idx]
+    
+    total_cost = float(np.dot(final_amounts, costs))
+    
+    gwp = 0.0
+    try:
+        gwp_idx = impact_cols.index("kg CO2-Eq/Unit")
+        gwp = float(np.dot(final_amounts, impact_matrix[:, gwp_idx]))
     except (ValueError, IndexError):
         pass
     
@@ -176,12 +182,19 @@ def evaluate_compliance_constrained(ind, costs, impact_matrix, impact_cols, base
     
     # Penalties for violating bounds
     penalty = gwp_penalty
-    if production_scale < (1 - max_scale_deviation) or production_scale > (1 + max_scale_deviation):
-        penalty += 100000.0 * abs(production_scale - np.clip(production_scale, 1 - max_scale_deviation, 1 + max_scale_deviation))
     
+    # Production scale penalty
+    if production_scale < (1 - max_scale_deviation):
+        penalty += 100000.0 * abs(production_scale - (1 - max_scale_deviation))
+    elif production_scale > (1 + max_scale_deviation):
+        penalty += 100000.0 * abs(production_scale - (1 + max_scale_deviation))
+    
+    # Efficiency factors penalty
     for ef in efficiency_factors:
-        if ef < (1 - max_efficiency_deviation) or ef > (1 + max_efficiency_deviation):
-            penalty += 100000.0 * abs(ef - np.clip(ef, 1 - max_efficiency_deviation, 1 + max_efficiency_deviation))
+        if ef < (1 - max_efficiency_deviation):
+            penalty += 100000.0 * abs(ef - (1 - max_efficiency_deviation))
+        elif ef > (1 + max_efficiency_deviation):
+            penalty += 100000.0 * abs(ef - (1 + max_efficiency_deviation))
     
     return (float(total_cost + penalty),)
 
