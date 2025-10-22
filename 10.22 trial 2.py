@@ -220,9 +220,8 @@ def run_nsga2_constrained(popsize, ngen, cxpb, mutpb, costs, matrix, impact_cols
                 offspring[i], = toolbox.mutate(offspring[i])
         
         # Evaluate all offspring (they all have invalid fitness after creation)
-        fitnesses = list(map(toolbox.evaluate, offspring))
-        for ind, fit in zip(offspring, fitnesses):
-            ind.fitness.values = fit
+        for ind in offspring:
+            ind.fitness.values = toolbox.evaluate(ind)
         
         # Combine parent and offspring populations and select best
         pop = toolbox.select(pop + offspring, popsize)
@@ -294,9 +293,8 @@ def run_single_constrained(obj_func, popsize, ngen, cxpb, mutpb, base_amounts, b
                 offspring[i], = toolbox.mutate(offspring[i])
         
         # Evaluate all offspring
-        fitnesses = list(map(toolbox.evaluate, offspring))
-        for ind, fit in zip(offspring, fitnesses):
-            ind.fitness.values = fit
+        for ind in offspring:
+            ind.fitness.values = toolbox.evaluate(ind)
         
         # Replace population
         pop[:] = offspring
