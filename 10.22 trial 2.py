@@ -199,9 +199,18 @@ def run_nsga2_constrained(popsize, ngen, cxpb, mutpb, costs, matrix, impact_cols
     toolbox.register("select", tools.selNSGA2)
 
     pop = toolbox.population(n=popsize)
-    fitnesses = list(map(toolbox.evaluate, pop))
-    for ind, fit in zip(pop, fitnesses):
-        ind.fitness.values = fit
+    
+    # Initial evaluation with error handling
+    try:
+        for ind in pop:
+            fitness_result = toolbox.evaluate(ind)
+            if not isinstance(fitness_result, tuple) or len(fitness_result) != 2:
+                st.error(f"Evaluation returned unexpected type: {type(fitness_result)}, value: {fitness_result}")
+            ind.fitness.values = fitness_result
+    except Exception as e:
+        st.error(f"Error during initial evaluation: {str(e)}")
+        st.error(f"Error type: {type(e).__name__}")
+        raise
 
     # Custom NSGA-II evolution loop
     for gen in range(ngen):
@@ -219,9 +228,16 @@ def run_nsga2_constrained(popsize, ngen, cxpb, mutpb, costs, matrix, impact_cols
             if random.random() < mutpb:
                 offspring[i], = toolbox.mutate(offspring[i])
         
-        # Evaluate all offspring (they all have invalid fitness after creation)
-        for ind in offspring:
-            ind.fitness.values = toolbox.evaluate(ind)
+        # Evaluate all offspring with error handling
+        try:
+            for ind in offspring:
+                fitness_result = toolbox.evaluate(ind)
+                ind.fitness.values = fitness_result
+        except Exception as e:
+            st.error(f"Error during generation {gen} evaluation: {str(e)}")
+            st.error(f"Error type: {type(e).__name__}")
+            st.error(f"Individual causing error: {ind}")
+            raise
         
         # Combine parent and offspring populations and select best
         pop = toolbox.select(pop + offspring, popsize)
@@ -270,9 +286,10 @@ def run_single_constrained(obj_func, popsize, ngen, cxpb, mutpb, base_amounts, b
     toolbox.register("select", tools.selTournament, tournsize=3)
 
     pop = toolbox.population(n=popsize)
-    fitnesses = list(map(toolbox.evaluate, pop))
-    for ind, fit in zip(pop, fitnesses):
-        ind.fitness.values = fit
+    
+    # Initial evaluation
+    for ind in pop:
+        ind.fitness.values = toolbox.evaluate(ind)
 
     hof = tools.HallOfFame(1)
     
@@ -294,7 +311,8 @@ def run_single_constrained(obj_func, popsize, ngen, cxpb, mutpb, base_amounts, b
         
         # Evaluate all offspring
         for ind in offspring:
-            ind.fitness.values = toolbox.evaluate(ind)
+            fitness_result = toolbox.evaluate(ind)
+            ind.fitness.values = fitness_result
         
         # Replace population
         pop[:] = offspring
