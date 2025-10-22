@@ -436,7 +436,8 @@ if st.button("Run Optimization", type="primary"):
 
     if scenario == "Optimize Cost vs GWP (Tradeoff)":
         # Run NSGA-II (cost vs GWP) to get the Pareto set
-        pareto = run_nsga2(popsize, ngen, cxpb, mutpb, lows, highs, rolled_df, cost_col, gwp_col)
+        # FIX: pass the full list of impact columns so all impacts are included in the multi-objective optimization
+        pareto = run_nsga2(popsize, ngen, cxpb, mutpb, lows, highs, rolled_df, cost_col, impact_cols)
 
         # Build a multi-objective Pareto table: Total Cost + all impact columns
         pareto_rows = []
