@@ -168,19 +168,19 @@ def evaluate_compliance_constrained(ind, costs, impact_matrix, impact_cols, base
     except ValueError:
         pass
     
-    # Heavy penalty for exceeding GWP target
+    # Heavy penalty for exceeding GWP target (must stay below target)
     gwp_penalty = 0
     if gwp > gwp_target:
-        gwp_penalty = 100000 * (gwp - gwp_target)
+        gwp_penalty = 1000000 * (gwp - gwp_target)
     
     # Penalties for violating bounds
     penalty = gwp_penalty
     if production_scale < (1 - max_scale_deviation) or production_scale > (1 + max_scale_deviation):
-        penalty += 10000 * abs(production_scale - np.clip(production_scale, 1 - max_scale_deviation, 1 + max_scale_deviation))
+        penalty += 100000 * abs(production_scale - np.clip(production_scale, 1 - max_scale_deviation, 1 + max_scale_deviation))
     
     for ef in efficiency_factors:
         if ef < (1 - max_efficiency_deviation) or ef > (1 + max_efficiency_deviation):
-            penalty += 10000 * abs(ef - np.clip(ef, 1 - max_efficiency_deviation, 1 + max_efficiency_deviation))
+            penalty += 100000 * abs(ef - np.clip(ef, 1 - max_efficiency_deviation, 1 + max_efficiency_deviation))
     
     return (total_cost + penalty,)
 
@@ -387,9 +387,20 @@ def run_single_constrained(obj_func, popsize, ngen, cxpb, mutpb, base_amounts, b
 
     pop = toolbox.population(n=popsize)
     
-    # Initial evaluation
+    # Initial evaluation with error handling
     for ind in pop:
-        ind.fitness.values = toolbox.evaluate(ind)
+        try:
+            fitness_result = toolbox.evaluate(ind)
+            if not isinstance(fitness_result, tuple):
+                fitness_result = (fitness_result,)
+            # Check for invalid values
+            if any(not np.isfinite(v) for v in fitness_result):
+                ind.fitness.values = (1e10,)  # Assign very bad fitness
+            else:
+                ind.fitness.values = fitness_result
+        except Exception as e:
+            st.error(f"Error evaluating individual: {e}")
+            ind.fitness.values = (1e10,)  # Assign very bad fitness
 
     hof = tools.HallOfFame(1)
     
@@ -412,10 +423,19 @@ def run_single_constrained(obj_func, popsize, ngen, cxpb, mutpb, base_amounts, b
                 mutated, = toolbox.mutate(offspring[i])
                 offspring[i] = creator.Individual(mutated)
         
-        # Evaluate all offspring
+        # Evaluate all offspring with error handling
         for ind in offspring:
-            fitness_result = toolbox.evaluate(ind)
-            ind.fitness.values = fitness_result
+            try:
+                fitness_result = toolbox.evaluate(ind)
+                if not isinstance(fitness_result, tuple):
+                    fitness_result = (fitness_result,)
+                # Check for invalid values
+                if any(not np.isfinite(v) for v in fitness_result):
+                    ind.fitness.values = (1e10,)
+                else:
+                    ind.fitness.values = fitness_result
+            except Exception as e:
+                ind.fitness.values = (1e10,)
         
         # Replace population
         pop[:] = offspring
