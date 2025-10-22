@@ -222,11 +222,14 @@ def run_nsga2_constrained(popsize, ngen, cxpb, mutpb, costs, matrix, impact_cols
         # Apply crossover and mutation
         for i in range(1, len(offspring), 2):
             if random.random() < cxpb and i < len(offspring):
-                offspring[i-1], offspring[i] = toolbox.mate(offspring[i-1], offspring[i])
+                child1, child2 = toolbox.mate(offspring[i-1], offspring[i])
+                offspring[i-1] = creator.Individual(child1)
+                offspring[i] = creator.Individual(child2)
         
         for i in range(len(offspring)):
             if random.random() < mutpb:
-                offspring[i], = toolbox.mutate(offspring[i])
+                mutated, = toolbox.mutate(offspring[i])
+                offspring[i] = creator.Individual(mutated)
         
         # Evaluate all offspring with error handling
         try:
@@ -303,11 +306,14 @@ def run_single_constrained(obj_func, popsize, ngen, cxpb, mutpb, base_amounts, b
         # Apply crossover and mutation
         for i in range(1, len(offspring), 2):
             if random.random() < cxpb and i < len(offspring):
-                offspring[i-1], offspring[i] = toolbox.mate(offspring[i-1], offspring[i])
+                child1, child2 = toolbox.mate(offspring[i-1], offspring[i])
+                offspring[i-1] = creator.Individual(child1)
+                offspring[i] = creator.Individual(child2)
         
         for i in range(len(offspring)):
             if random.random() < mutpb:
-                offspring[i], = toolbox.mutate(offspring[i])
+                mutated, = toolbox.mutate(offspring[i])
+                offspring[i] = creator.Individual(mutated)
         
         # Evaluate all offspring
         for ind in offspring:
