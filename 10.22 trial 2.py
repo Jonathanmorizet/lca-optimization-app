@@ -197,7 +197,6 @@ def run_nsga2_constrained(popsize, ngen, cxpb, mutpb, costs, matrix, impact_cols
 
     toolbox.register("mutate", bounded_mutate, mu=0, sigma=0.05, indpb=0.2)
     toolbox.register("select", tools.selNSGA2)
-    toolbox.register("clone", lambda ind: creator.Individual(list(ind)))
 
     pop = toolbox.population(n=popsize)
     fitnesses = list(map(toolbox.evaluate, pop))
@@ -208,28 +207,24 @@ def run_nsga2_constrained(popsize, ngen, cxpb, mutpb, costs, matrix, impact_cols
     for gen in range(ngen):
         # Select the next generation individuals
         offspring = toolbox.select(pop, popsize)
-        # Clone the selected individuals
-        offspring = [toolbox.clone(ind) for ind in offspring]
+        # Clone the selected individuals - this creates new individuals with fresh fitness
+        offspring = [creator.Individual(list(ind)) for ind in offspring]
         
         # Apply crossover and mutation
         for i in range(1, len(offspring), 2):
             if random.random() < cxpb and i < len(offspring):
                 offspring[i-1], offspring[i] = toolbox.mate(offspring[i-1], offspring[i])
-                offspring[i-1].fitness.values = ()
-                offspring[i].fitness.values = ()
         
         for i in range(len(offspring)):
             if random.random() < mutpb:
                 offspring[i], = toolbox.mutate(offspring[i])
-                offspring[i].fitness.values = ()
         
-        # Evaluate individuals with invalid fitness
-        invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
-        fitnesses = list(map(toolbox.evaluate, invalid_ind))
-        for ind, fit in zip(invalid_ind, fitnesses):
+        # Evaluate all offspring (they all have invalid fitness after creation)
+        fitnesses = list(map(toolbox.evaluate, offspring))
+        for ind, fit in zip(offspring, fitnesses):
             ind.fitness.values = fit
         
-        # Combine parent and offspring populations
+        # Combine parent and offspring populations and select best
         pop = toolbox.select(pop + offspring, popsize)
     
     return tools.sortNondominated(pop, k=len(pop), first_front_only=True)[0]
@@ -274,7 +269,6 @@ def run_single_constrained(obj_func, popsize, ngen, cxpb, mutpb, base_amounts, b
 
     toolbox.register("mutate", bounded_mutate, mu=0, sigma=0.05, indpb=0.2)
     toolbox.register("select", tools.selTournament, tournsize=3)
-    toolbox.register("clone", lambda ind: creator.Individual(list(ind)))
 
     pop = toolbox.population(n=popsize)
     fitnesses = list(map(toolbox.evaluate, pop))
@@ -287,25 +281,21 @@ def run_single_constrained(obj_func, popsize, ngen, cxpb, mutpb, base_amounts, b
     for gen in range(ngen):
         # Select the next generation individuals
         offspring = toolbox.select(pop, popsize)
-        # Clone the selected individuals
-        offspring = [toolbox.clone(ind) for ind in offspring]
+        # Clone the selected individuals - creates new individuals with fresh fitness
+        offspring = [creator.Individual(list(ind)) for ind in offspring]
         
         # Apply crossover and mutation
         for i in range(1, len(offspring), 2):
             if random.random() < cxpb and i < len(offspring):
                 offspring[i-1], offspring[i] = toolbox.mate(offspring[i-1], offspring[i])
-                offspring[i-1].fitness.values = ()
-                offspring[i].fitness.values = ()
         
         for i in range(len(offspring)):
             if random.random() < mutpb:
                 offspring[i], = toolbox.mutate(offspring[i])
-                offspring[i].fitness.values = ()
         
-        # Evaluate individuals with invalid fitness
-        invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
-        fitnesses = list(map(toolbox.evaluate, invalid_ind))
-        for ind, fit in zip(invalid_ind, fitnesses):
+        # Evaluate all offspring
+        fitnesses = list(map(toolbox.evaluate, offspring))
+        for ind, fit in zip(offspring, fitnesses):
             ind.fitness.values = fit
         
         # Replace population
