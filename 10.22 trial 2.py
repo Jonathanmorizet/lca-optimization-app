@@ -106,20 +106,24 @@ def evaluate_budget_constrained(ind, costs, impact_matrix, impact_cols, base_amo
     production_scale = float(ind[0])
     efficiency_factors = np.array(ind[1:], dtype=float)
     
-    final_amounts = np.copy(base_amounts).astype(float).flatten()
+    # Ensure base_amounts is 1D
+    base_amounts_flat = np.asarray(base_amounts).flatten()
+    final_amounts = np.copy(base_amounts_flat).astype(float)
     
     # Count efficiency materials seen so far
     efficiency_count = 0
-    for i in range(len(base_amounts)):
+    for i in range(len(final_amounts)):
         if scale_materials_mask[i]:
-            final_amounts[i] = float(base_amounts[i] * production_scale)
+            final_amounts[i] = float(base_amounts_flat[i] * production_scale)
         elif efficiency_materials_mask[i]:
             if efficiency_count < len(efficiency_factors):
-                final_amounts[i] = float(base_amounts[i] * production_scale * efficiency_factors[efficiency_count])
+                final_amounts[i] = float(base_amounts_flat[i] * production_scale * efficiency_factors[efficiency_count])
                 efficiency_count += 1
     
-    # Ensure costs is flat
+    # Ensure costs is flat and matches length
     costs_flat = np.asarray(costs).flatten()
+    if len(costs_flat) != len(final_amounts):
+        costs_flat = costs_flat[:len(final_amounts)]
     
     # Calculate cost with proper scalar extraction
     total_cost_result = np.dot(final_amounts, costs_flat)
@@ -150,6 +154,9 @@ def evaluate_budget_constrained(ind, costs, impact_matrix, impact_cols, base_amo
     try:
         gwp_idx = impact_cols.index("kg CO2-Eq/Unit")
         impact_col = impact_matrix[:, gwp_idx].flatten()
+        # Ensure impact_col matches length
+        if len(impact_col) != len(final_amounts):
+            impact_col = impact_col[:len(final_amounts)]
         gwp_result = np.dot(final_amounts, impact_col)
         gwp = float(gwp_result.item() if hasattr(gwp_result, 'item') else gwp_result)
     except (ValueError, IndexError):
@@ -168,28 +175,37 @@ def evaluate_compliance_constrained(ind, costs, impact_matrix, impact_cols, base
     production_scale = float(ind[0])
     efficiency_factors = np.array(ind[1:], dtype=float)
     
-    final_amounts = np.copy(base_amounts).astype(float).flatten()
+    # Ensure base_amounts is 1D
+    base_amounts_flat = np.asarray(base_amounts).flatten()
+    final_amounts = np.copy(base_amounts_flat).astype(float)
     
     # Count efficiency materials seen so far
     efficiency_count = 0
-    for i in range(len(base_amounts)):
+    for i in range(len(final_amounts)):
         if scale_materials_mask[i]:
-            final_amounts[i] = float(base_amounts[i] * production_scale)
+            final_amounts[i] = float(base_amounts_flat[i] * production_scale)
         elif efficiency_materials_mask[i]:
             if efficiency_count < len(efficiency_factors):
-                final_amounts[i] = float(base_amounts[i] * production_scale * efficiency_factors[efficiency_count])
+                final_amounts[i] = float(base_amounts_flat[i] * production_scale * efficiency_factors[efficiency_count])
                 efficiency_count += 1
     
-    # Ensure costs is also flat
+    # Ensure costs is 1D and matches length
     costs_flat = np.asarray(costs).flatten()
+    if len(costs_flat) != len(final_amounts):
+        # Take only the first N elements to match
+        costs_flat = costs_flat[:len(final_amounts)]
     
     # Calculate cost - use item() to extract scalar
-    total_cost = float(np.dot(final_amounts, costs_flat).item() if hasattr(np.dot(final_amounts, costs_flat), 'item') else np.dot(final_amounts, costs_flat))
+    total_cost_result = np.dot(final_amounts, costs_flat)
+    total_cost = float(total_cost_result.item() if hasattr(total_cost_result, 'item') else total_cost_result)
     
     gwp = 0.0
     try:
         gwp_idx = impact_cols.index("kg CO2-Eq/Unit")
         impact_col = impact_matrix[:, gwp_idx].flatten()
+        # Ensure impact_col matches length
+        if len(impact_col) != len(final_amounts):
+            impact_col = impact_col[:len(final_amounts)]
         gwp_result = np.dot(final_amounts, impact_col)
         gwp = float(gwp_result.item() if hasattr(gwp_result, 'item') else gwp_result)
     except (ValueError, IndexError):
