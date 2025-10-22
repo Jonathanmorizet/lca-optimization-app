@@ -417,7 +417,11 @@ def run_single_constrained(obj_func, popsize, ngen, cxpb, mutpb, base_amounts, b
             else:
                 ind.fitness.values = fitness_result
         except Exception as e:
+            import traceback
             st.error(f"Error evaluating individual: {e}")
+            st.error(f"Individual: {ind}")
+            st.error(f"Individual types: {[type(x) for x in ind]}")
+            st.error(f"Traceback:\n{traceback.format_exc()}")
             ind.fitness.values = (1e10,)  # Assign very bad fitness
 
     hof = tools.HallOfFame(1)
@@ -453,6 +457,11 @@ def run_single_constrained(obj_func, popsize, ngen, cxpb, mutpb, base_amounts, b
                 else:
                     ind.fitness.values = fitness_result
             except Exception as e:
+                import traceback
+                st.error(f"Error evaluating individual in gen {gen}: {e}")
+                st.error(f"Individual: {ind}")
+                st.error(f"Individual types: {[type(x) for x in ind]}")
+                st.error(f"Traceback:\n{traceback.format_exc()}")
                 ind.fitness.values = (1e10,)
         
         # Replace population
