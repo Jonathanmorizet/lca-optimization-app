@@ -106,7 +106,7 @@ def evaluate_budget_constrained(ind, costs, impact_matrix, impact_cols, base_amo
     production_scale = float(ind[0])
     efficiency_factors = np.array(ind[1:], dtype=float)
     
-    final_amounts = np.copy(base_amounts).astype(float)
+    final_amounts = np.copy(base_amounts).astype(float).flatten()
     
     # Count efficiency materials seen so far
     efficiency_count = 0
@@ -118,7 +118,13 @@ def evaluate_budget_constrained(ind, costs, impact_matrix, impact_cols, base_amo
                 final_amounts[i] = float(base_amounts[i] * production_scale * efficiency_factors[efficiency_count])
                 efficiency_count += 1
     
-    total_cost = float(np.dot(final_amounts, costs))
+    # Ensure costs is flat
+    costs_flat = np.asarray(costs).flatten()
+    
+    # Calculate cost with proper scalar extraction
+    total_cost_result = np.dot(final_amounts, costs_flat)
+    total_cost = float(total_cost_result.item() if hasattr(total_cost_result, 'item') else total_cost_result)
+    
     actual_trees = float(baseline_trees * production_scale)
     
     # Heavy penalty for exceeding budget
@@ -143,7 +149,9 @@ def evaluate_budget_constrained(ind, costs, impact_matrix, impact_cols, base_amo
     gwp = 0.0
     try:
         gwp_idx = impact_cols.index("kg CO2-Eq/Unit")
-        gwp = float(np.dot(final_amounts, impact_matrix[:, gwp_idx]))
+        impact_col = impact_matrix[:, gwp_idx].flatten()
+        gwp_result = np.dot(final_amounts, impact_col)
+        gwp = float(gwp_result.item() if hasattr(gwp_result, 'item') else gwp_result)
     except (ValueError, IndexError):
         gwp = 0.0
     
@@ -160,7 +168,7 @@ def evaluate_compliance_constrained(ind, costs, impact_matrix, impact_cols, base
     production_scale = float(ind[0])
     efficiency_factors = np.array(ind[1:], dtype=float)
     
-    final_amounts = np.copy(base_amounts).astype(float)
+    final_amounts = np.copy(base_amounts).astype(float).flatten()
     
     # Count efficiency materials seen so far
     efficiency_count = 0
@@ -172,12 +180,18 @@ def evaluate_compliance_constrained(ind, costs, impact_matrix, impact_cols, base
                 final_amounts[i] = float(base_amounts[i] * production_scale * efficiency_factors[efficiency_count])
                 efficiency_count += 1
     
-    total_cost = float(np.dot(final_amounts, costs))
+    # Ensure costs is also flat
+    costs_flat = np.asarray(costs).flatten()
+    
+    # Calculate cost - use item() to extract scalar
+    total_cost = float(np.dot(final_amounts, costs_flat).item() if hasattr(np.dot(final_amounts, costs_flat), 'item') else np.dot(final_amounts, costs_flat))
     
     gwp = 0.0
     try:
         gwp_idx = impact_cols.index("kg CO2-Eq/Unit")
-        gwp = float(np.dot(final_amounts, impact_matrix[:, gwp_idx]))
+        impact_col = impact_matrix[:, gwp_idx].flatten()
+        gwp_result = np.dot(final_amounts, impact_col)
+        gwp = float(gwp_result.item() if hasattr(gwp_result, 'item') else gwp_result)
     except (ValueError, IndexError):
         gwp = 0.0
     
