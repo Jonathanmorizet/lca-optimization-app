@@ -343,7 +343,7 @@ def run_nsga2_constrained(popsize, ngen, cxpb, mutpb, costs, matrix, impact_cols
     return tools.sortNondominated(pop, k=len(pop), first_front_only=True)[0]
 
 def run_single_constrained(obj_func, popsize, ngen, cxpb, mutpb, base_amounts, baseline_trees, 
-                          scale_mask, efficiency_mask, max_scale_dev, max_eff_dev, *args):
+                          scale_mask, efficiency_mask, max_scale_dev, max_eff_dev, *args, **kwargs):
     """Run single-objective optimization."""
     try:
         del creator.FitnessMin
@@ -364,9 +364,11 @@ def run_single_constrained(obj_func, popsize, ngen, cxpb, mutpb, base_amounts, b
     
     toolbox.register("individual", tools.initIterate, creator.Individual, create_individual)
     toolbox.register("population", tools.initRepeat, list, toolbox.individual)
-    toolbox.register("evaluate", obj_func, *args, base_amounts=base_amounts, baseline_trees=baseline_trees,
+    toolbox.register("evaluate", obj_func, *args, 
+                    base_amounts=base_amounts, baseline_trees=baseline_trees,
                     scale_materials_mask=scale_mask, efficiency_materials_mask=efficiency_mask,
-                    max_scale_deviation=max_scale_dev, max_efficiency_deviation=max_eff_dev)
+                    max_scale_deviation=max_scale_dev, max_efficiency_deviation=max_eff_dev,
+                    **kwargs)
     toolbox.register("mate", tools.cxBlend, alpha=0.3)
 
     def bounded_mutate(ind, mu, sigma, indpb):
@@ -703,8 +705,9 @@ if merged_df is not None:
                         evaluate_compliance_constrained, popsize, ngen, cxpb, mutpb, 
                         base_amounts, baseline_trees, scale_materials_mask, 
                         efficiency_materials_mask, max_scale_deviation, 
-                        max_efficiency_deviation, 
-                        costs, impact_matrix, traci_impact_cols, gwp_target
+                        max_efficiency_deviation,
+                        costs, impact_matrix, traci_impact_cols,
+                        gwp_target=gwp_target
                     )
                     
                     production_scale = best[0]
