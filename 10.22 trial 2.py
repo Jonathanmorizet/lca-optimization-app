@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from deap import base, creator, tools, algorithms
+from deap import base, creator, tools
 import random
 import subprocess
 import sys
@@ -10,10 +10,10 @@ from io import BytesIO
 
 # Ensure DEAP is installed
 try:
-    from deap import base, creator, tools, algorithms
+    from deap import base, creator, tools
 except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "deap"])
-    from deap import base, creator, tools, algorithms
+    from deap import base, creator, tools
 
 random.seed(42)
 
@@ -197,13 +197,41 @@ def run_nsga2_constrained(popsize, ngen, cxpb, mutpb, costs, matrix, impact_cols
 
     toolbox.register("mutate", bounded_mutate, mu=0, sigma=0.05, indpb=0.2)
     toolbox.register("select", tools.selNSGA2)
+    toolbox.register("clone", lambda ind: creator.Individual(list(ind)))
 
     pop = toolbox.population(n=popsize)
     fitnesses = list(map(toolbox.evaluate, pop))
     for ind, fit in zip(pop, fitnesses):
         ind.fitness.values = fit
 
-    algorithms.eaMuPlusLambda(pop, toolbox, mu=popsize, lambda_=popsize, cxpb=cxpb, mutpb=mutpb, ngen=ngen, verbose=False)
+    # Custom NSGA-II evolution loop
+    for gen in range(ngen):
+        # Select the next generation individuals
+        offspring = toolbox.select(pop, popsize)
+        # Clone the selected individuals
+        offspring = [toolbox.clone(ind) for ind in offspring]
+        
+        # Apply crossover and mutation
+        for i in range(1, len(offspring), 2):
+            if random.random() < cxpb:
+                offspring[i-1], offspring[i] = toolbox.mate(offspring[i-1], offspring[i])
+                del offspring[i-1].fitness.values
+                del offspring[i].fitness.values
+        
+        for i in range(len(offspring)):
+            if random.random() < mutpb:
+                offspring[i], = toolbox.mutate(offspring[i])
+                del offspring[i].fitness.values
+        
+        # Evaluate individuals with invalid fitness
+        invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
+        fitnesses = map(toolbox.evaluate, invalid_ind)
+        for ind, fit in zip(invalid_ind, fitnesses):
+            ind.fitness.values = fit
+        
+        # Combine parent and offspring populations
+        pop = toolbox.select(pop + offspring, popsize)
+    
     return tools.sortNondominated(pop, k=len(pop), first_front_only=True)[0]
 
 def run_single_constrained(obj_func, popsize, ngen, cxpb, mutpb, base_amounts, baseline_trees, 
@@ -246,6 +274,7 @@ def run_single_constrained(obj_func, popsize, ngen, cxpb, mutpb, base_amounts, b
 
     toolbox.register("mutate", bounded_mutate, mu=0, sigma=0.05, indpb=0.2)
     toolbox.register("select", tools.selTournament, tournsize=3)
+    toolbox.register("clone", lambda ind: creator.Individual(list(ind)))
 
     pop = toolbox.population(n=popsize)
     fitnesses = list(map(toolbox.evaluate, pop))
@@ -253,7 +282,36 @@ def run_single_constrained(obj_func, popsize, ngen, cxpb, mutpb, base_amounts, b
         ind.fitness.values = fit
 
     hof = tools.HallOfFame(1)
-    algorithms.eaSimple(pop, toolbox, cxpb=cxpb, mutpb=mutpb, ngen=ngen, halloffame=hof, verbose=False)
+    
+    # Custom evolution loop
+    for gen in range(ngen):
+        # Select the next generation individuals
+        offspring = toolbox.select(pop, popsize)
+        # Clone the selected individuals
+        offspring = [toolbox.clone(ind) for ind in offspring]
+        
+        # Apply crossover and mutation
+        for i in range(1, len(offspring), 2):
+            if random.random() < cxpb:
+                offspring[i-1], offspring[i] = toolbox.mate(offspring[i-1], offspring[i])
+                del offspring[i-1].fitness.values
+                del offspring[i].fitness.values
+        
+        for i in range(len(offspring)):
+            if random.random() < mutpb:
+                offspring[i], = toolbox.mutate(offspring[i])
+                del offspring[i].fitness.values
+        
+        # Evaluate individuals with invalid fitness
+        invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
+        fitnesses = map(toolbox.evaluate, invalid_ind)
+        for ind, fit in zip(invalid_ind, fitnesses):
+            ind.fitness.values = fit
+        
+        # Replace population
+        pop[:] = offspring
+        hof.update(pop)
+    
     return hof[0]
 
 # Load data
@@ -450,6 +508,8 @@ if merged_df is not None:
                 total_gwp_opt = np.dot(final_amounts, impact_matrix[:, gwp_idx])
                 st.success(f"**Selected Solution ({int(actual_trees)} trees):** ${total_cost_opt:.2f} total (${total_cost_opt/actual_trees:.2f}/tree) | {total_gwp_opt:.2f} kg CO2-Eq ({total_gwp_opt/actual_trees:.2f} kg/tree)")
                 
+                if 'history' not in st.session_state:
+                    st.session_state['history'] = []
                 st.session_state.history.append({"scenario": scenario, "results": df_materials, "pareto": df_pareto})
 
         elif scenario == "Optimize Cost Only":
@@ -492,6 +552,8 @@ if merged_df is not None:
                 })
                 
                 st.dataframe(df_materials)
+                if 'history' not in st.session_state:
+                    st.session_state['history'] = []
                 st.session_state.history.append({"scenario": scenario, "results": df_materials})
 
         elif scenario == "Optimize Single Impact" and selected_impact:
@@ -542,6 +604,8 @@ if merged_df is not None:
                 })
                 
                 st.dataframe(df_materials)
+                if 'history' not in st.session_state:
+                    st.session_state['history'] = []
                 st.session_state.history.append({"scenario": f"Single Impact - {selected_impact}", "results": df_materials})
 
     if st.button("Download Merged Data as Excel"):
