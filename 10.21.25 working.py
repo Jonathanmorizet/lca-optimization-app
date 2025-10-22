@@ -188,11 +188,34 @@ def eval_cost_plus_all(ind, df, impact_cols, cost_col, alpha_cost, alpha_imp, lo
 # ===============================
 # NSGA-II (strict bounds)
 # ===============================
-def run_nsga2(popsize, ngen, cxpb, mutpb, lows, highs, df, cost_col, gwp_col):
-    try: del creator.FitnessMin; del creator.Individual
-    except Exception: pass
+def run_nsga2(popsize, ngen, cxpb, mutpb, lows, highs, df, cost_col, impact_cols):
+    """
+    Multi-objective NSGA-II: minimize Total Cost and each impact in impact_cols.
 
-    creator.create("FitnessMin", base.Fitness, weights=(-1.0, -1.0))
+    Args:
+        popsize, ngen, cxpb, mutpb, lows, highs: GA params and bounds
+        df: rolled dataframe providing cost & impacts
+        cost_col: column name for unit cost
+        impact_cols: list of impact column names (order preserved; GWP should be first if desired)
+
+    Returns:
+        list: Pareto front (first front) of nondominated individuals
+    """
+    # Clean up any previously created DEAP classes to avoid redefinition errors
+    try:
+        del creator.FitnessMin
+    except Exception:
+        pass
+    try:
+        del creator.Individual
+    except Exception:
+        pass
+
+    # number of objectives = 1 (cost) + number of impact columns
+    n_objectives = 1 + len(impact_cols)
+    weights = tuple([-1.0] * n_objectives)  # minimize all objectives
+
+    creator.create("FitnessMin", base.Fitness, weights=weights)
     creator.create("Individual", list, fitness=creator.FitnessMin)
 
     toolbox = base.Toolbox()
@@ -200,34 +223,52 @@ def run_nsga2(popsize, ngen, cxpb, mutpb, lows, highs, df, cost_col, gwp_col):
     toolbox.register("individual", tools.initIterate, creator.Individual, toolbox.attr_vec)
     toolbox.register("population", tools.initRepeat, list, toolbox.individual)
 
+    impact_matrix = df[impact_cols].to_numpy(float)
+    costs = df[cost_col].to_numpy(float)
+
+    def evaluate_multi(ind):
+        x = np.maximum(0.0, np.array(ind, dtype=float))
+        total_cost = float(np.dot(x, costs))
+        total_impacts = []
+        # preserve order of impact_cols
+        for i in range(impact_matrix.shape[1]):
+            total_impacts.append(float(np.dot(x, impact_matrix[:, i])))
+        return (total_cost,) + tuple(total_impacts)
+
+    toolbox.register("evaluate", evaluate_multi)
+
+    # Simple genetic operators with hard clipping
+    def _clip_local(individual):
+        for i in range(len(individual)):
+            if individual[i] < lows[i]:
+                individual[i] = lows[i]
+            elif individual[i] > highs[i]:
+                individual[i] = highs[i]
+
     def make_children(pop):
         selected = tools.selTournament(pop, len(pop), tournsize=3)
         offspring = [creator.Individual(ind[:]) for ind in selected]
-
         for i in range(0, len(offspring), 2):
             if i + 1 < len(offspring) and random.random() < cxpb:
-                tools.cxBlend(offspring[i], offspring[i+1], alpha=0.5)
-            _clip(offspring[i], lows, highs)
-            if i + 1 < len(offspring): _clip(offspring[i+1], lows, highs)
-
+                tools.cxBlend(offspring[i], offspring[i + 1], alpha=0.5)
+            _clip_local(offspring[i])
+            if i + 1 < len(offspring):
+                _clip_local(offspring[i + 1])
         for ind in offspring:
             if random.random() < mutpb:
                 tools.mutGaussian(ind, mu=0, sigma=0.1, indpb=0.2)
-            _clip(ind, lows, highs)
+            _clip_local(ind)
         return offspring
-
-    def evaluate(ind):
-        return eval_cost_gwp(ind, df, cost_col, gwp_col, lows, highs)
 
     pop = toolbox.population(n=popsize)
     for ind in pop:
-        _clip(ind, lows, highs)
-        ind.fitness.values = evaluate(ind)
+        _clip_local(ind)
+        ind.fitness.values = toolbox.evaluate(ind)
 
     for _ in range(ngen):
         off = make_children(pop)
         for ind in off:
-            ind.fitness.values = evaluate(ind)
+            ind.fitness.values = toolbox.evaluate(ind)
         pop = tools.selNSGA2(pop + off, popsize)
 
     pareto = tools.sortNondominated(pop, k=len(pop), first_front_only=True)[0]
@@ -394,47 +435,75 @@ if st.button("Run Optimization", type="primary"):
     st.subheader(f"Running: {scenario}")
 
     if scenario == "Optimize Cost vs GWP (Tradeoff)":
+        # Run NSGA-II (cost vs GWP) to get the Pareto set
         pareto = run_nsga2(popsize, ngen, cxpb, mutpb, lows, highs, rolled_df, cost_col, gwp_col)
-        df_pf = pd.DataFrame([[ind.fitness.values[0], ind.fitness.values[1]] for ind in pareto],
-                             columns=["Total Cost ($)", "Total GWP (kg CO₂e)"])
+
+        # Build a multi-objective Pareto table: Total Cost + all impact columns
+        pareto_rows = []
+        for ind in pareto:
+            vec = _clip(list(ind), list(lows), list(highs))
+            x = np.asarray(vec, float)
+            row = {"Total Cost ($)": float(np.dot(x, rolled_df[cost_col].to_numpy(float)))}
+            for imp in impact_cols:
+                row[imp] = float(np.dot(x, rolled_df[imp].to_numpy(float)))
+            pareto_rows.append(row)
+
+        cols = ["Total Cost ($)"] + impact_cols
+        df_pf = pd.DataFrame(pareto_rows, columns=cols) if pareto_rows else pd.DataFrame(columns=cols)
+
+        st.markdown("#### Pareto front (Total Cost + all impacts)")
         st.dataframe(df_pf, use_container_width=True)
 
-        fig, ax = plt.subplots()
-        ax.scatter(df_pf["Total Cost ($)"], df_pf["Total GWP (kg CO₂e)"])
-        ax.set_xlabel("Total Cost ($)")
-        ax.set_ylabel("Total GWP (kg CO₂e)")
-        ax.set_title("Pareto Front: Cost vs GWP")
-        st.pyplot(fig)
+        # Download Pareto table (CSV)
+        csv_bytes = df_pf.to_csv(index=False).encode()
+        st.download_button(
+            "Download Pareto table (CSV)",
+            data=csv_bytes,
+            file_name="pareto_table.csv",
+            mime="text/csv"
+        )
 
-        # Show a concrete optimized inventory: min-cost point on Pareto
-        best = min(pareto, key=lambda x: x.fitness.values[0])
-        opt = np.array(best, float)
-        inv = rolled_df[["Material","Unit"]].copy()
-        inv["Base Amount"] = base_amounts
-        inv["Optimized Amount"] = opt
-        st.markdown("#### Example optimized inventory (min-cost on Pareto)")
-        st.dataframe(inv, use_container_width=True)
+        # Quick visualization: Cost vs GWP (if GWP column present)
+        if gwp_col in df_pf.columns:
+            fig, ax = plt.subplots()
+            ax.scatter(df_pf["Total Cost ($)"], df_pf[gwp_col])
+            ax.set_xlabel("Total Cost ($)")
+            ax.set_ylabel(gwp_col)
+            ax.set_title("Pareto Front: Cost vs GWP")
+            st.pyplot(fig)
+        else:
+            st.info("GWP column not present in Pareto table for plotting.")
 
-        tot_cost = float(best.fitness.values[0])
-        tot_gwp  = float(best.fitness.values[1])
-        st.metric("Cost / tree ($/tree)", f"{tot_cost/DEFAULT_TREES:,.2f}")
-        st.metric("GWP / tree (kg CO₂e/tree)", f"{tot_gwp/DEFAULT_TREES:,.2f}")
+         # Show a concrete optimized inventory: min-cost point on Pareto
+         best = min(pareto, key=lambda x: x.fitness.values[0])
+         opt = np.array(best, float)
+         inv = rolled_df[["Material","Unit"]].copy()
+         inv["Base Amount"] = base_amounts
+         inv["Optimized Amount"] = opt
+         st.markdown("#### Example optimized inventory (min-cost on Pareto)")
+         st.dataframe(inv, use_container_width=True)
 
-        # Per-year scaled CSV if Year present
-        if (raw_df is not None) and ("Year" in raw_df.columns):
-            ratio = np.divide(opt, base_amounts, out=np.ones_like(opt), where=(base_amounts>0))
-            key = list(zip(rolled_df["Material"], rolled_df["Unit"]))
-            scale = {k: r for k, r in zip(key, ratio)}
-            out = raw_df.copy()
-            out["Amount_Optimized"] = out.apply(
-                lambda r: r["Amount"] * scale.get((r["Material"], r["Unit"]), 1.0), axis=1
-            )
-            st.download_button(
-                "Download optimized per-year inventory (CSV)",
-                out.to_csv(index=False).encode(),
-                file_name="optimized_yearly_inventory.csv",
-                mime="text/csv"
-            )
+         tot_cost = float(best.fitness.values[0])
+         # compute GWP from optimized vector to remain consistent with the displayed table
+         tot_gwp  = float(np.dot(np.asarray(best, float), rolled_df[gwp_col].to_numpy(float))) if gwp_col in rolled_df.columns else 0.0
+         st.metric("Cost / tree ($/tree)", f"{tot_cost/DEFAULT_TREES:,.2f}")
+         st.metric("GWP / tree (kg CO₂e/tree)", f"{tot_gwp/DEFAULT_TREES:,.2f}")
+
+         # Per-year scaled CSV if Year present
+         if (raw_df is not None) and ("Year" in raw_df.columns):
+             ratio = np.divide(opt, base_amounts, out=np.ones_like(opt), where=(base_amounts>0))
+             key = list(zip(rolled_df["Material"], rolled_df["Unit"]))
+             scale = {k: r for k, r in zip(key, ratio)}
+             out = raw_df.copy()
+             out["Amount_Optimized"] = out.apply(
+                 lambda r: r["Amount"] * scale.get((r["Material"], r["Unit"]), 1.0), axis=1
+             )
+             st.download_button(
+                 "Download optimized per-year inventory (CSV)",
+                 out.to_csv(index=False).encode(),
+                 file_name="optimized_yearly_inventory.csv",
+                 mime="text/csv"
+             )
 
     elif scenario == "Optimize Cost + Combined Impact":
         best = run_single(
