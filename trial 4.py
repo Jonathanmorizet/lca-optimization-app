@@ -407,7 +407,8 @@ if mode == "📊 Multi-Farm Comparison & Hybrid Strategy":
         # Comparative Material Breakdown
         if len(farms_data) > 1:
             st.markdown("---")
-            st.markdown("## 💰 Comparative Cost Breakdown (Top 10 Materials)")
+            st.markdown("## 💰 Comparative Cost Breakdown (Top Materials)")
+            st.info("ℹ️ Showing top materials that contribute ≥1% of total cost for each farm strategy")
             
             fig_comp_cost, axes = plt.subplots(1, len(farms_data), figsize=(7*len(farms_data), 6))
             if len(farms_data) == 1:
@@ -417,12 +418,18 @@ if mode == "📊 Multi-Farm Comparison & Hybrid Strategy":
                 material_costs = farm['base_amounts'] * farm['costs']
                 cost_breakdown = pd.DataFrame({
                     'Material': farm['materials'],
-                    'Cost': material_costs
-                }).sort_values('Cost', ascending=False).head(10)
+                    'Cost': material_costs,
+                    'Percentage': (material_costs / farm['total_cost'] * 100)
+                }).sort_values('Cost', ascending=False)
                 
-                axes[idx].barh(cost_breakdown['Material'], cost_breakdown['Cost'])
+                # Filter: Keep materials that are ≥1% OR top 10, whichever gives more materials
+                top_10 = cost_breakdown.head(10)
+                significant = cost_breakdown[cost_breakdown['Percentage'] >= 1.0]
+                cost_breakdown_filtered = pd.concat([top_10, significant]).drop_duplicates().sort_values('Cost', ascending=False)
+                
+                axes[idx].barh(cost_breakdown_filtered['Material'], cost_breakdown_filtered['Cost'])
                 axes[idx].set_xlabel('Cost ($)')
-                axes[idx].set_title(f'{farm["name"]}\nBaseline: ${farm["total_cost"]:.2f}')
+                axes[idx].set_title(f'{farm["name"]}\nBaseline: ${farm["total_cost"]:.2f}\n({len(cost_breakdown_filtered)} materials shown)')
                 axes[idx].invert_yaxis()
             
             plt.tight_layout()
@@ -430,7 +437,8 @@ if mode == "📊 Multi-Farm Comparison & Hybrid Strategy":
             
             # Comparative GWP Breakdown
             if "kg CO2-Eq/Unit" in farms_data[0]['impact_columns']:
-                st.markdown("## 🌍 Comparative GWP Breakdown (Top 10 Materials)")
+                st.markdown("## 🌍 Comparative GWP Breakdown (Top Materials)")
+                st.info("ℹ️ Showing top materials that contribute ≥1% of total GWP for each farm strategy")
                 
                 fig_comp_gwp, axes = plt.subplots(1, len(farms_data), figsize=(7*len(farms_data), 6))
                 if len(farms_data) == 1:
@@ -441,13 +449,19 @@ if mode == "📊 Multi-Farm Comparison & Hybrid Strategy":
                     material_gwp = farm['base_amounts'] * farm['impact_matrix'][:, gwp_idx]
                     gwp_breakdown = pd.DataFrame({
                         'Material': farm['materials'],
-                        'GWP': material_gwp
-                    }).sort_values('GWP', ascending=False).head(10)
+                        'GWP': material_gwp,
+                        'Percentage': (material_gwp / farm['total_gwp'] * 100) if farm['total_gwp'] > 0 else 0
+                    }).sort_values('GWP', ascending=False)
                     
-                    axes[idx].barh(gwp_breakdown['Material'], gwp_breakdown['GWP'], 
+                    # Filter: Keep materials that are ≥1% OR top 10, whichever gives more materials
+                    top_10 = gwp_breakdown.head(10)
+                    significant = gwp_breakdown[gwp_breakdown['Percentage'] >= 1.0]
+                    gwp_breakdown_filtered = pd.concat([top_10, significant]).drop_duplicates().sort_values('GWP', ascending=False)
+                    
+                    axes[idx].barh(gwp_breakdown_filtered['Material'], gwp_breakdown_filtered['GWP'], 
                                  color='#2ecc71', edgecolor='none')
                     axes[idx].set_xlabel('GWP (kg CO2-Eq)')
-                    axes[idx].set_title(f'{farm["name"]}\nBaseline: {farm["total_gwp"]:.2f} kg CO2-Eq')
+                    axes[idx].set_title(f'{farm["name"]}\nBaseline: {farm["total_gwp"]:.2f} kg CO2-Eq\n({len(gwp_breakdown_filtered)} materials shown)')
                     axes[idx].invert_yaxis()
                 
                 plt.tight_layout()
