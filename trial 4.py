@@ -408,7 +408,7 @@ if mode == "📊 Multi-Farm Comparison & Hybrid Strategy":
         if len(farms_data) > 1:
             st.markdown("---")
             st.markdown("## 💰 Comparative Cost Breakdown (Top Materials)")
-            st.info("ℹ️ Showing top materials that contribute ≥1% of total cost for each farm strategy")
+            st.info("ℹ️ Showing all materials that contribute ≥1% of total cost for each farm strategy")
             
             fig_comp_cost, axes = plt.subplots(1, len(farms_data), figsize=(7*len(farms_data), 6))
             if len(farms_data) == 1:
@@ -422,14 +422,19 @@ if mode == "📊 Multi-Farm Comparison & Hybrid Strategy":
                     'Percentage': (material_costs / farm['total_cost'] * 100)
                 }).sort_values('Cost', ascending=False)
                 
-                # Filter: Keep materials that are ≥1% OR top 10, whichever gives more materials
-                top_10 = cost_breakdown.head(10)
-                significant = cost_breakdown[cost_breakdown['Percentage'] >= 1.0]
-                cost_breakdown_filtered = pd.concat([top_10, significant]).drop_duplicates().sort_values('Cost', ascending=False)
+                # Only keep materials that contribute ≥1% of total cost
+                cost_breakdown_filtered = cost_breakdown[cost_breakdown['Percentage'] >= 1.0].copy()
+                
+                # If no materials meet the 1% threshold, show top 5
+                if len(cost_breakdown_filtered) == 0:
+                    cost_breakdown_filtered = cost_breakdown.head(5).copy()
+                    threshold_note = "Top 5 materials (no materials ≥1%)"
+                else:
+                    threshold_note = f"All materials ≥1% of total cost"
                 
                 axes[idx].barh(cost_breakdown_filtered['Material'], cost_breakdown_filtered['Cost'])
                 axes[idx].set_xlabel('Cost ($)')
-                axes[idx].set_title(f'{farm["name"]}\nBaseline: ${farm["total_cost"]:.2f}\n({len(cost_breakdown_filtered)} materials shown)')
+                axes[idx].set_title(f'{farm["name"]}\nBaseline: ${farm["total_cost"]:.2f}\n{len(cost_breakdown_filtered)} materials - {threshold_note}')
                 axes[idx].invert_yaxis()
             
             plt.tight_layout()
@@ -438,7 +443,7 @@ if mode == "📊 Multi-Farm Comparison & Hybrid Strategy":
             # Comparative GWP Breakdown
             if "kg CO2-Eq/Unit" in farms_data[0]['impact_columns']:
                 st.markdown("## 🌍 Comparative GWP Breakdown (Top Materials)")
-                st.info("ℹ️ Showing top materials that contribute ≥1% of total GWP for each farm strategy")
+                st.info("ℹ️ Showing all materials that contribute ≥1% of total GWP for each farm strategy")
                 
                 fig_comp_gwp, axes = plt.subplots(1, len(farms_data), figsize=(7*len(farms_data), 6))
                 if len(farms_data) == 1:
@@ -453,15 +458,20 @@ if mode == "📊 Multi-Farm Comparison & Hybrid Strategy":
                         'Percentage': (material_gwp / farm['total_gwp'] * 100) if farm['total_gwp'] > 0 else 0
                     }).sort_values('GWP', ascending=False)
                     
-                    # Filter: Keep materials that are ≥1% OR top 10, whichever gives more materials
-                    top_10 = gwp_breakdown.head(10)
-                    significant = gwp_breakdown[gwp_breakdown['Percentage'] >= 1.0]
-                    gwp_breakdown_filtered = pd.concat([top_10, significant]).drop_duplicates().sort_values('GWP', ascending=False)
+                    # Only keep materials that contribute ≥1% of total GWP
+                    gwp_breakdown_filtered = gwp_breakdown[gwp_breakdown['Percentage'] >= 1.0].copy()
+                    
+                    # If no materials meet the 1% threshold, show top 5
+                    if len(gwp_breakdown_filtered) == 0:
+                        gwp_breakdown_filtered = gwp_breakdown.head(5).copy()
+                        threshold_note = "Top 5 materials (no materials ≥1%)"
+                    else:
+                        threshold_note = f"All materials ≥1% of total GWP"
                     
                     axes[idx].barh(gwp_breakdown_filtered['Material'], gwp_breakdown_filtered['GWP'], 
                                  color='#2ecc71', edgecolor='none')
                     axes[idx].set_xlabel('GWP (kg CO2-Eq)')
-                    axes[idx].set_title(f'{farm["name"]}\nBaseline: {farm["total_gwp"]:.2f} kg CO2-Eq\n({len(gwp_breakdown_filtered)} materials shown)')
+                    axes[idx].set_title(f'{farm["name"]}\nBaseline: {farm["total_gwp"]:.2f} kg CO2-Eq\n{len(gwp_breakdown_filtered)} materials - {threshold_note}')
                     axes[idx].invert_yaxis()
                 
                 plt.tight_layout()
