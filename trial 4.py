@@ -71,12 +71,16 @@ def load_multiple_farms(uploaded_files):
             if 'Year' in merged_df.columns:
                 years = []
                 for y in merged_df['Year']:
-                    if pd.isna(y):
-                        years.append('N/A')
+                    if pd.isna(y) or y == '' or y == 'nan':
+                        years.append('0')  # Use '0' for missing years instead of 'N/A'
                     else:
-                        years.append(str(int(y)) if isinstance(y, (int, float)) else str(y))
+                        try:
+                            # Convert to int then string to handle floats like 1.0, 2.0, etc.
+                            years.append(str(int(float(y))))
+                        except (ValueError, TypeError):
+                            years.append('0')
             else:
-                years = ['N/A'] * len(materials)
+                years = ['0'] * len(materials)
             
             impact_columns = [col for col in impact_df.columns if col in merged_df.columns and col not in ['Material', 'Unit', 'Year']]
             impact_matrix = merged_df[impact_columns].values
@@ -595,21 +599,28 @@ if mode == "📊 Multi-Farm Comparison & Hybrid Strategy":
                         'Source Strategy': hybrid_sources
                     })
                     
-                    # Proper sorting
+                    # Proper sorting - handle all years including 7 and 8
                     def get_sort_key(row):
-                        year_str = str(row['Year'])
-                        if year_str == 'N/A' or year_str == 'nan':
-                            return (999999, -row['Total Cost ($)'])
+                        year_str = str(row['Year']).strip()
+                        # Handle various representations of missing/zero years
+                        if year_str in ['N/A', 'nan', '', '0']:
+                            return (0, -row['Total Cost ($)'])  # Put year 0 first
                         try:
                             year_int = int(float(year_str))
-                            return (year_int, -row['Total Cost ($)'])
-                        except:
-                            return (999999, -row['Total Cost ($)'])
+                            return (year_int, -row['Total Cost ($)'])  # Sort by year ascending, then cost descending
+                        except (ValueError, TypeError):
+                            return (999999, -row['Total Cost ($)'])  # Put invalid years at end
                     
                     hybrid_df['_sort_key'] = hybrid_df.apply(get_sort_key, axis=1)
                     hybrid_df = hybrid_df.sort_values('_sort_key').drop('_sort_key', axis=1)
                     
                     st.dataframe(hybrid_df, use_container_width=True)
+                    
+                    # Debug info - show year distribution
+                    year_counts = hybrid_df['Year'].value_counts().sort_index()
+                    st.markdown("**Materials by Year:**")
+                    for year, count in year_counts.items():
+                        st.text(f"Year {year}: {count} materials")
                     
                     # Summary by source
                     st.markdown("### 📊 Materials by Source Strategy")
