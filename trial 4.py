@@ -48,8 +48,17 @@ def load_multiple_farms(uploaded_files):
             costs = merged_df['Unit Cost ($)'].values
             units = merged_df['Unit'].tolist()
             
-            # Get year information if available
-            years = merged_df['Year'].tolist() if 'Year' in merged_df.columns else ['N/A'] * len(materials)
+            # Get year information - handle both numeric and string years
+            if 'Year' in merged_df.columns:
+                years = []
+                for y in merged_df['Year']:
+                    if pd.isna(y):
+                        years.append('N/A')
+                    else:
+                        # Convert to string to preserve exact year value
+                        years.append(str(int(y)) if isinstance(y, (int, float)) else str(y))
+            else:
+                years = ['N/A'] * len(materials)
             
             impact_columns = [col for col in impact_df.columns if col in merged_df.columns and col not in ['Material', 'Unit', 'Year']]
             impact_matrix = merged_df[impact_columns].values
@@ -81,7 +90,7 @@ def load_multiple_farms(uploaded_files):
     
     return farms_data if len(farms_data) > 0 else None
 
-# DEAP Evaluation Functions (keeping existing functions)
+# DEAP Evaluation Functions
 def evaluate_cost_gwp_constrained(ind, costs, impact_matrix, impact_cols, base_amounts, 
                                   baseline_trees, scale_materials_mask, efficiency_materials_mask, 
                                   max_scale_deviation, max_efficiency_deviation):
@@ -106,7 +115,6 @@ def evaluate_cost_gwp_constrained(ind, costs, impact_matrix, impact_cols, base_a
             penalty += 10000 * abs(ef - np.clip(ef, 1 - max_efficiency_deviation, 1 + max_efficiency_deviation))
     
     total_cost = np.dot(final_amounts, costs)
-    actual_trees = baseline_trees * production_scale
     
     gwp = 0.0
     try:
@@ -116,6 +124,201 @@ def evaluate_cost_gwp_constrained(ind, costs, impact_matrix, impact_cols, base_a
         pass
     
     return total_cost + penalty, gwp + penalty
+
+def evaluate_cost_only_constrained(ind, costs, base_amounts, baseline_trees, 
+                                   scale_materials_mask, efficiency_materials_mask,
+                                   max_scale_deviation, max_efficiency_deviation):
+    production_scale = ind[0]
+    efficiency_factors = np.array(ind[1:])
+    
+    final_amounts = np.copy(base_amounts)
+    for i in range(len(base_amounts)):
+        if scale_materials_mask[i]:
+            final_amounts[i] = base_amounts[i] * production_scale
+        elif efficiency_materials_mask[i]:
+            efficiency_idx = np.where(efficiency_materials_mask[:i])[0].size
+            final_amounts[i] = base_amounts[i] * production_scale * efficiency_factors[efficiency_idx]
+    
+    penalty = 0
+    if production_scale < (1 - max_scale_deviation) or production_scale > (1 + max_scale_deviation):
+        penalty += 10000 * abs(production_scale - np.clip(production_scale, 1 - max_scale_deviation, 1 + max_scale_deviation))
+    
+    for ef in efficiency_factors:
+        if ef < (1 - max_efficiency_deviation) or ef > (1 + max_efficiency_deviation):
+            penalty += 10000 * abs(ef - np.clip(ef, 1 - max_efficiency_deviation, 1 + max_efficiency_deviation))
+    
+    total_cost = np.dot(final_amounts, costs)
+    return (total_cost + penalty,)
+
+def evaluate_single_impact_constrained(ind, matrix, colname, cols, base_amounts, baseline_trees,
+                                       scale_materials_mask, efficiency_materials_mask,
+                                       max_scale_deviation, max_efficiency_deviation):
+    production_scale = ind[0]
+    efficiency_factors = np.array(ind[1:])
+    
+    final_amounts = np.copy(base_amounts)
+    for i in range(len(base_amounts)):
+        if scale_materials_mask[i]:
+            final_amounts[i] = base_amounts[i] * production_scale
+        elif efficiency_materials_mask[i]:
+            efficiency_idx = np.where(efficiency_materials_mask[:i])[0].size
+            final_amounts[i] = base_amounts[i] * production_scale * efficiency_factors[efficiency_idx]
+    
+    penalty = 0
+    if production_scale < (1 - max_scale_deviation) or production_scale > (1 + max_scale_deviation):
+        penalty += 10000 * abs(production_scale - np.clip(production_scale, 1 - max_scale_deviation, 1 + max_scale_deviation))
+    
+    for ef in efficiency_factors:
+        if ef < (1 - max_efficiency_deviation) or ef > (1 + max_efficiency_deviation):
+            penalty += 10000 * abs(ef - np.clip(ef, 1 - max_efficiency_deviation, 1 + max_efficiency_deviation))
+    
+    try:
+        idx = cols.index(colname)
+        impact = np.dot(final_amounts, matrix[:, idx])
+    except ValueError:
+        impact = 0.0
+    
+    return (impact + penalty,)
+
+# Optimization Logic
+def run_nsga2_constrained(popsize, ngen, cxpb, mutpb, costs, matrix, impact_cols, base_amounts, 
+                         baseline_trees, scale_mask, efficiency_mask, max_scale_dev, max_eff_dev):
+    try:
+        del creator.FitnessMin
+        del creator.Individual
+    except:
+        pass
+    creator.create("FitnessMin", base.Fitness, weights=(-1.0, -1.0))
+    creator.create("Individual", list, fitness=creator.FitnessMin)
+
+    num_efficiency_materials = np.sum(efficiency_mask)
+    
+    toolbox = base.Toolbox()
+    def create_individual():
+        ind = [random.uniform(1 - max_scale_dev, 1 + max_scale_dev)]
+        for _ in range(num_efficiency_materials):
+            ind.append(random.uniform(1 - max_eff_dev, 1 + max_eff_dev))
+        return ind
+    
+    toolbox.register("individual", tools.initIterate, creator.Individual, create_individual)
+    toolbox.register("population", tools.initRepeat, list, toolbox.individual)
+    toolbox.register("evaluate", evaluate_cost_gwp_constrained, 
+                    costs=costs, impact_matrix=matrix, impact_cols=impact_cols, 
+                    base_amounts=base_amounts, baseline_trees=baseline_trees,
+                    scale_materials_mask=scale_mask, efficiency_materials_mask=efficiency_mask,
+                    max_scale_deviation=max_scale_dev, max_efficiency_deviation=max_eff_dev)
+    toolbox.register("mate", tools.cxBlend, alpha=0.3)
+
+    def bounded_mutate(ind, mu, sigma, indpb):
+        mutated = list(ind)
+        for i in range(len(mutated)):
+            if random.random() < indpb:
+                mutated[i] += random.gauss(mu, sigma)
+                if i == 0:
+                    mutated[i] = np.clip(mutated[i], 1 - max_scale_dev, 1 + max_scale_dev)
+                else:
+                    mutated[i] = np.clip(mutated[i], 1 - max_eff_dev, 1 + max_eff_dev)
+        return mutated,
+
+    toolbox.register("mutate", bounded_mutate, mu=0, sigma=0.05, indpb=0.2)
+    toolbox.register("select", tools.selNSGA2)
+
+    pop = toolbox.population(n=popsize)
+    
+    for ind in pop:
+        ind.fitness.values = toolbox.evaluate(ind)
+
+    for gen in range(ngen):
+        offspring = toolbox.select(pop, popsize)
+        offspring = [creator.Individual(list(ind)) for ind in offspring]
+        
+        for i in range(1, len(offspring), 2):
+            if random.random() < cxpb and i < len(offspring):
+                child1, child2 = toolbox.mate(offspring[i-1], offspring[i])
+                offspring[i-1] = creator.Individual(child1)
+                offspring[i] = creator.Individual(child2)
+        
+        for i in range(len(offspring)):
+            if random.random() < mutpb:
+                mutated, = toolbox.mutate(offspring[i])
+                offspring[i] = creator.Individual(mutated)
+        
+        for ind in offspring:
+            ind.fitness.values = toolbox.evaluate(ind)
+        
+        pop = toolbox.select(pop + offspring, popsize)
+    
+    return tools.sortNondominated(pop, k=len(pop), first_front_only=True)[0]
+
+def run_single_constrained(obj_func, popsize, ngen, cxpb, mutpb, base_amounts, baseline_trees, 
+                          scale_mask, efficiency_mask, max_scale_dev, max_eff_dev, *args):
+    try:
+        del creator.FitnessMin
+        del creator.Individual
+    except:
+        pass
+    creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
+    creator.create("Individual", list, fitness=creator.FitnessMin)
+
+    num_efficiency_materials = np.sum(efficiency_mask)
+    
+    toolbox = base.Toolbox()
+    def create_individual():
+        ind = [random.uniform(1 - max_scale_dev, 1 + max_scale_dev)]
+        for _ in range(num_efficiency_materials):
+            ind.append(random.uniform(1 - max_eff_dev, 1 + max_eff_dev))
+        return ind
+    
+    toolbox.register("individual", tools.initIterate, creator.Individual, create_individual)
+    toolbox.register("population", tools.initRepeat, list, toolbox.individual)
+    toolbox.register("evaluate", obj_func, *args, base_amounts=base_amounts, baseline_trees=baseline_trees,
+                    scale_materials_mask=scale_mask, efficiency_materials_mask=efficiency_mask,
+                    max_scale_deviation=max_scale_dev, max_efficiency_deviation=max_eff_dev)
+    toolbox.register("mate", tools.cxBlend, alpha=0.3)
+
+    def bounded_mutate(ind, mu, sigma, indpb):
+        mutated = list(ind)
+        for i in range(len(mutated)):
+            if random.random() < indpb:
+                mutated[i] += random.gauss(mu, sigma)
+                if i == 0:
+                    mutated[i] = np.clip(mutated[i], 1 - max_scale_dev, 1 + max_scale_dev)
+                else:
+                    mutated[i] = np.clip(mutated[i], 1 - max_eff_dev, 1 + max_eff_dev)
+        return mutated,
+
+    toolbox.register("mutate", bounded_mutate, mu=0, sigma=0.05, indpb=0.2)
+    toolbox.register("select", tools.selTournament, tournsize=3)
+
+    pop = toolbox.population(n=popsize)
+    
+    for ind in pop:
+        ind.fitness.values = toolbox.evaluate(ind)
+
+    hof = tools.HallOfFame(1)
+    
+    for gen in range(ngen):
+        offspring = toolbox.select(pop, popsize)
+        offspring = [creator.Individual(list(ind)) for ind in offspring]
+        
+        for i in range(1, len(offspring), 2):
+            if random.random() < cxpb and i < len(offspring):
+                child1, child2 = toolbox.mate(offspring[i-1], offspring[i])
+                offspring[i-1] = creator.Individual(child1)
+                offspring[i] = creator.Individual(child2)
+        
+        for i in range(len(offspring)):
+            if random.random() < mutpb:
+                mutated, = toolbox.mutate(offspring[i])
+                offspring[i] = creator.Individual(mutated)
+        
+        for ind in offspring:
+            ind.fitness.values = toolbox.evaluate(ind)
+        
+        pop[:] = offspring
+        hof.update(pop)
+    
+    return hof[0]
 
 # Load data
 farms_data = load_multiple_farms(uploaded_files)
@@ -375,7 +578,7 @@ if farms_data is not None and len(farms_data) > 0:
                 ax_hybrid.grid(True, alpha=0.3)
                 st.pyplot(fig_hybrid)
                 
-                # Hybrid Implementation Plan with Year and Unit
+                # Hybrid Implementation Plan with Year and Unit - FIXED SORTING
                 st.markdown("---")
                 st.markdown("### 📋 Hybrid Strategy Implementation Plan")
                 
@@ -390,8 +593,19 @@ if farms_data is not None and len(farms_data) > 0:
                     'Source Strategy': hybrid_sources
                 })
                 
-                # Sort by year then cost
-                hybrid_df = hybrid_df.sort_values(['Year', 'Total Cost ($)'], ascending=[True, False])
+                # FIXED: Proper sorting that handles all years including 7 and 8
+                def get_sort_key(row):
+                    year_str = str(row['Year'])
+                    if year_str == 'N/A' or year_str == 'nan':
+                        return (999999, -row['Total Cost ($)'])
+                    try:
+                        year_int = int(float(year_str))
+                        return (year_int, -row['Total Cost ($)'])
+                    except:
+                        return (999999, -row['Total Cost ($)'])
+                
+                hybrid_df['_sort_key'] = hybrid_df.apply(get_sort_key, axis=1)
+                hybrid_df = hybrid_df.sort_values('_sort_key').drop('_sort_key', axis=1)
                 
                 st.dataframe(hybrid_df, use_container_width=True)
                 
@@ -419,8 +633,340 @@ if farms_data is not None and len(farms_data) > 0:
                 plt.tight_layout()
                 st.pyplot(fig_sources)
     
+    # ========== OPTIMIZATION SECTION (FROM v22) ==========
     st.markdown("---")
-    st.info("✅ Hybrid strategy analysis complete! Upload files to continue with individual farm optimization if desired.")
+    st.markdown("## 🔬 Single Farm Optimization")
     
+    if len(farms_data) == 1:
+        st.info("Single farm loaded - proceed with optimization below")
+    else:
+        st.info("Multiple farms loaded - select one farm to optimize")
+    
+    # Farm selection for optimization
+    selected_farm_idx = 0
+    if len(farms_data) > 1:
+        selected_farm_idx = st.selectbox(
+            "Select farm to optimize",
+            range(len(farms_data)),
+            format_func=lambda x: farms_data[x]['name']
+        )
+    
+    farm = farms_data[selected_farm_idx]
+    merged_df = farm['merged_df']
+    materials = farm['materials']
+    base_amounts = farm['base_amounts']
+    costs = farm['costs']
+    impact_matrix = farm['impact_matrix']
+    traci_impact_cols = farm['impact_columns']
+    
+    st.markdown(f"### Optimizing: **{farm['name']}**")
+    st.dataframe(merged_df)
+    
+    # Material Classification
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🔧 Material Classification")
+    st.sidebar.info("Classify materials as either scaling with production or efficiency-based")
+    
+    # Auto-detect scale materials
+    default_scale = []
+    scale_keywords = ['transplant', 'seedling', 'plant', 'tree']
+    for i, mat in enumerate(materials):
+        if any(keyword in mat.lower() for keyword in scale_keywords):
+            default_scale.append(i)
+    
+    with st.sidebar.expander("Customize Material Types", expanded=True):
+        st.markdown("**Scale Materials** change proportionally with production (transplants, etc.)")
+        st.markdown("**Efficiency Materials** can be optimized independently (fertilizers, pesticides, fuel)")
+        
+        scale_material_indices = st.multiselect(
+            "Select Scale Materials",
+            options=list(range(len(materials))),
+            default=default_scale,
+            format_func=lambda x: f"{materials[x]}"
+        )
+        
+        efficiency_material_indices = st.multiselect(
+            "Select Efficiency Materials",
+            options=[i for i in range(len(materials)) if i not in scale_material_indices],
+            default=[i for i in range(len(materials)) if i not in default_scale],
+            format_func=lambda x: f"{materials[x]}"
+        )
+    
+    # Create masks
+    scale_materials_mask = np.zeros(len(materials), dtype=bool)
+    scale_materials_mask[scale_material_indices] = True
+    
+    efficiency_materials_mask = np.zeros(len(materials), dtype=bool)
+    efficiency_materials_mask[efficiency_material_indices] = True
+    
+    # Display material status
+    st.sidebar.markdown("**Material Status:**")
+    st.sidebar.markdown(f"📏 **Scale Materials:** {sum(scale_materials_mask)}")
+    st.sidebar.markdown(f"⚡ **Efficiency Materials:** {sum(efficiency_materials_mask)}")
+    
+    # Production Configuration
+    st.sidebar.markdown("### 🌳 Production Settings")
+    baseline_trees = st.sidebar.number_input("Baseline Trees", min_value=1, value=1900, step=1)
+    
+    st.sidebar.markdown("### 📊 Optimization Bounds")
+    max_scale_deviation_pct = st.sidebar.slider("Production Scale ±%", 5, 50, 20)
+    max_scale_deviation = max_scale_deviation_pct / 100.0
+    
+    max_efficiency_deviation_pct = st.sidebar.slider("Material Efficiency ±%", 5, 30, 20)
+    max_efficiency_deviation = max_efficiency_deviation_pct / 100.0
+    
+    # Sidebar controls
+    scenario = st.sidebar.selectbox("Optimization Scenario", [
+        "Optimize Cost vs GWP (Tradeoff)",
+        "Optimize Single Impact",
+        "Optimize Cost Only"
+    ])
+    
+    st.sidebar.markdown("### 🧬 Genetic Algorithm Parameters")
+    popsize = st.sidebar.slider("Population Size", 20, 200, 100)
+    ngen = st.sidebar.slider("Generations", 20, 200, 50)
+    cxpb = st.sidebar.slider("Crossover Probability", 0.0, 1.0, 0.7)
+    mutpb = st.sidebar.slider("Mutation Probability", 0.0, 1.0, 0.3)
+    
+    selected_impact = None
+    if scenario == "Optimize Single Impact":
+        selected_impact = st.selectbox("Select TRACI Impact", traci_impact_cols)
+    
+    # Calculate baseline metrics
+    baseline_cost = np.dot(base_amounts, costs)
+    baseline_cost_per_tree = baseline_cost / baseline_trees
+    
+    baseline_gwp = 0.0
+    if "kg CO2-Eq/Unit" in traci_impact_cols:
+        gwp_idx = traci_impact_cols.index("kg CO2-Eq/Unit")
+        baseline_gwp = np.dot(base_amounts, impact_matrix[:, gwp_idx])
+        baseline_gwp_per_tree = baseline_gwp / baseline_trees
+        
+        st.info(f"📌 **Baseline ({baseline_trees} trees):** ${baseline_cost:.2f} total (${baseline_cost_per_tree:.2f}/tree) | {baseline_gwp:.2f} kg CO2-Eq total ({baseline_gwp_per_tree:.2f} kg/tree)")
+    
+    if st.button("Run Optimization"):
+        st.subheader(f"Running: {scenario}")
+        
+        if scenario == "Optimize Cost vs GWP (Tradeoff)":
+            with st.spinner("Running NSGA-II optimization..."):
+                pareto = run_nsga2_constrained(popsize, ngen, cxpb, mutpb, costs, impact_matrix,
+                                              traci_impact_cols, base_amounts, baseline_trees,
+                                              scale_materials_mask, efficiency_materials_mask,
+                                              max_scale_deviation, max_efficiency_deviation)
+                
+                results = []
+                for ind in pareto:
+                    production_scale = ind[0]
+                    efficiency_factors = np.array(ind[1:])
+                    
+                    final_amounts = np.copy(base_amounts)
+                    for i in range(len(base_amounts)):
+                        if scale_materials_mask[i]:
+                            final_amounts[i] = base_amounts[i] * production_scale
+                        elif efficiency_materials_mask[i]:
+                            efficiency_idx = np.where(efficiency_materials_mask[:i])[0].size
+                            final_amounts[i] = base_amounts[i] * production_scale * efficiency_factors[efficiency_idx]
+                    
+                    total_cost = np.dot(final_amounts, costs)
+                    actual_trees = baseline_trees * production_scale
+                    
+                    gwp_idx = traci_impact_cols.index("kg CO2-Eq/Unit")
+                    total_gwp = np.dot(final_amounts, impact_matrix[:, gwp_idx])
+                    
+                    cost_per_tree = total_cost / actual_trees
+                    gwp_per_tree = total_gwp / actual_trees
+                    
+                    results.append({
+                        "Total Cost": total_cost,
+                        "Total GWP": total_gwp,
+                        "Trees": actual_trees,
+                        "Cost/Tree": cost_per_tree,
+                        "GWP/Tree": gwp_per_tree,
+                        "Individual": ind
+                    })
+                
+                df_pareto = pd.DataFrame(results)
+                st.dataframe(df_pareto[["Total Cost", "Total GWP", "Trees", "Cost/Tree", "GWP/Tree"]])
+                
+                # Plot Pareto front
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+                
+                ax1.scatter(df_pareto["Total Cost"], df_pareto["Total GWP"], alpha=0.6, s=50)
+                ax1.scatter([baseline_cost], [baseline_gwp], color='red', s=150, marker='*', label='Baseline', zorder=5)
+                ax1.set_xlabel("Total Cost ($)")
+                ax1.set_ylabel("Total GWP (kg CO2-Eq)")
+                ax1.set_title("Pareto Front: Total Values")
+                ax1.legend()
+                ax1.grid(True, alpha=0.3)
+                
+                ax2.scatter(df_pareto["Cost/Tree"], df_pareto["GWP/Tree"], alpha=0.6, s=50)
+                ax2.scatter([baseline_cost_per_tree], [baseline_gwp_per_tree], color='red', s=150, marker='*', label='Baseline', zorder=5)
+                ax2.set_xlabel("Cost per Tree ($)")
+                ax2.set_ylabel("GWP per Tree (kg CO2-Eq)")
+                ax2.set_title("Pareto Front: Per-Tree Values")
+                ax2.legend()
+                ax2.grid(True, alpha=0.3)
+                
+                st.pyplot(fig)
+                
+                # Allow user to select a solution
+                st.markdown("### Select a Solution from Pareto Front")
+                solution_idx = st.selectbox("Solution Index", range(len(pareto)))
+                
+                selected_ind = pareto[solution_idx]
+                production_scale = selected_ind[0]
+                efficiency_factors = np.array(selected_ind[1:])
+                
+                final_amounts = np.copy(base_amounts)
+                material_type = []
+                for i in range(len(base_amounts)):
+                    if scale_materials_mask[i]:
+                        final_amounts[i] = base_amounts[i] * production_scale
+                        material_type.append("SCALE")
+                    elif efficiency_materials_mask[i]:
+                        efficiency_idx = np.where(efficiency_materials_mask[:i])[0].size
+                        final_amounts[i] = base_amounts[i] * production_scale * efficiency_factors[efficiency_idx]
+                        material_type.append("EFFICIENCY")
+                    else:
+                        material_type.append("FIXED")
+                
+                df_materials = pd.DataFrame({
+                    "Material": materials,
+                    "Type": material_type,
+                    "Base Amount": base_amounts,
+                    "Optimized Amount": final_amounts,
+                    "Change (%)": ((final_amounts - base_amounts) / base_amounts * 100)
+                })
+                
+                st.dataframe(df_materials)
+                
+                # Summary
+                total_cost_opt = np.dot(final_amounts, costs)
+                total_gwp_opt = np.dot(final_amounts, impact_matrix[:, gwp_idx])
+                actual_trees = baseline_trees * production_scale
+                cost_savings = baseline_cost - total_cost_opt
+                gwp_reduction = baseline_gwp - total_gwp_opt
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Cost", f"${total_cost_opt:.2f}", f"-${cost_savings:.2f}")
+                with col2:
+                    st.metric("Total GWP", f"{total_gwp_opt:.2f} kg", f"-{gwp_reduction:.2f} kg")
+                with col3:
+                    st.metric("Trees Produced", f"{actual_trees:.0f}", f"{actual_trees - baseline_trees:+.0f}")
+                
+                st.success(f"**Per-Tree Metrics:** ${total_cost_opt/actual_trees:.2f}/tree | {total_gwp_opt/actual_trees:.2f} kg CO2-Eq/tree")
+        
+        elif scenario == "Optimize Cost Only":
+            with st.spinner("Running single-objective optimization..."):
+                best = run_single_constrained(evaluate_cost_only_constrained, popsize, ngen, cxpb, mutpb,
+                                             base_amounts, baseline_trees, scale_materials_mask,
+                                             efficiency_materials_mask, max_scale_deviation,
+                                             max_efficiency_deviation, costs)
+                
+                production_scale = best[0]
+                efficiency_factors = np.array(best[1:])
+                
+                final_amounts = np.copy(base_amounts)
+                material_type = []
+                for i in range(len(base_amounts)):
+                    if scale_materials_mask[i]:
+                        final_amounts[i] = base_amounts[i] * production_scale
+                        material_type.append("SCALE")
+                    elif efficiency_materials_mask[i]:
+                        efficiency_idx = np.where(efficiency_materials_mask[:i])[0].size
+                        final_amounts[i] = base_amounts[i] * production_scale * efficiency_factors[efficiency_idx]
+                        material_type.append("EFFICIENCY")
+                    else:
+                        material_type.append("FIXED")
+                
+                total_cost = np.dot(final_amounts, costs)
+                actual_trees = baseline_trees * production_scale
+                cost_per_tree = total_cost / actual_trees
+                cost_savings = baseline_cost - total_cost
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Cost", f"${total_cost:.2f}", f"-${cost_savings:.2f}")
+                with col2:
+                    st.metric("Cost per Tree", f"${cost_per_tree:.2f}", f"-${(baseline_cost_per_tree - cost_per_tree):.2f}")
+                with col3:
+                    st.metric("Trees Produced", f"{actual_trees:.0f}", f"{actual_trees - baseline_trees:+.0f}")
+                
+                df_materials = pd.DataFrame({
+                    "Material": materials,
+                    "Type": material_type,
+                    "Base Amount": base_amounts,
+                    "Optimized Amount": final_amounts,
+                    "Change (%)": ((final_amounts - base_amounts) / base_amounts * 100)
+                })
+                
+                st.dataframe(df_materials)
+        
+        elif scenario == "Optimize Single Impact" and selected_impact:
+            with st.spinner(f"Optimizing {selected_impact}..."):
+                best = run_single_constrained(evaluate_single_impact_constrained, popsize, ngen, cxpb, mutpb,
+                                             base_amounts, baseline_trees, scale_materials_mask,
+                                             efficiency_materials_mask, max_scale_deviation,
+                                             max_efficiency_deviation,
+                                             impact_matrix, selected_impact, traci_impact_cols)
+                
+                production_scale = best[0]
+                efficiency_factors = np.array(best[1:])
+                
+                final_amounts = np.copy(base_amounts)
+                material_type = []
+                for i in range(len(base_amounts)):
+                    if scale_materials_mask[i]:
+                        final_amounts[i] = base_amounts[i] * production_scale
+                        material_type.append("SCALE")
+                    elif efficiency_materials_mask[i]:
+                        efficiency_idx = np.where(efficiency_materials_mask[:i])[0].size
+                        final_amounts[i] = base_amounts[i] * production_scale * efficiency_factors[efficiency_idx]
+                        material_type.append("EFFICIENCY")
+                    else:
+                        material_type.append("FIXED")
+                
+                impact_idx = traci_impact_cols.index(selected_impact)
+                total_impact = np.dot(final_amounts, impact_matrix[:, impact_idx])
+                actual_trees = baseline_trees * production_scale
+                impact_per_tree = total_impact / actual_trees
+                
+                baseline_impact = np.dot(base_amounts, impact_matrix[:, impact_idx])
+                baseline_impact_per_tree = baseline_impact / baseline_trees
+                impact_reduction = baseline_impact - total_impact
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric(f"Total {selected_impact}", f"{total_impact:.4f}", f"-{impact_reduction:.4f}")
+                with col2:
+                    st.metric(f"{selected_impact} per Tree", f"{impact_per_tree:.4f}",
+                             f"-{(baseline_impact_per_tree - impact_per_tree):.4f}")
+                with col3:
+                    st.metric("Trees Produced", f"{actual_trees:.0f}", f"{actual_trees - baseline_trees:+.0f}")
+                
+                df_materials = pd.DataFrame({
+                    "Material": materials,
+                    "Type": material_type,
+                    "Base Amount": base_amounts,
+                    "Optimized Amount": final_amounts,
+                    "Change (%)": ((final_amounts - base_amounts) / base_amounts * 100)
+                })
+                
+                st.dataframe(df_materials)
+    
+    # Download functionality
+    if st.button("Download Merged Data as Excel"):
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            merged_df.to_excel(writer, index=False, sheet_name='Merged Data')
+        output.seek(0)
+        st.download_button(
+            label="Download Excel File",
+            data=output,
+            file_name=f"optimized_{farm['name']}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
 else:
     st.info("📂 Upload one or more Excel files to begin analysis.\n\n**Tips:**\n- Upload multiple files to compare different farm management strategies\n- Each file should contain material inputs, costs, and environmental impacts\n- The app will identify which strategy is most efficient")
